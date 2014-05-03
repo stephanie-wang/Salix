@@ -11,6 +11,10 @@ func nrand() int64 {
   return x
 }
 
+func popularity(reads int, staleReads int, writes int) int {
+  return reads + staleReads + writes
+}
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -70,6 +74,11 @@ type ReshardArgs struct {
   Seen map[int64]*Reply
 }
 
+type ShardReport struct {
+  Popularities map[int]int
+  Config int
+  Gid int64
+}
 
 func hash(s string) uint32 {
   h := fnv.New32a()
