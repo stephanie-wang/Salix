@@ -74,7 +74,7 @@ type ReshardArgs struct {
   Seen map[int64]*Reply
 }
 
-type ShardReport struct {
+type Popularity struct {
   Popularities map[int]int
   Config int
   Gid int64
