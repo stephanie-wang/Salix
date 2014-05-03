@@ -32,6 +32,7 @@ type Popularity struct {
   Popularities map[int]int
   Config int
   Gid int64
+  Seq int
 }
 
 type JoinArgs struct {

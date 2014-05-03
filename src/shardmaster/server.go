@@ -29,13 +29,13 @@ type ShardMaster struct {
 
 type Op struct {
   // Your data here.
-  Type string // JOIN, LEAVE, SCORE, QUERY, NOP
+  Type string // JOIN, LEAVE, POPULARITY, QUERY, NOP
   Request int64 // random ID for this particular request
-  GID int64 // for JOIN, LEAVE, SCORE
-  Seq int // for SCORE
+  GID int64 // for JOIN, LEAVE, POPULARITY
+  Seq int // for POPULARITY
   Servers []string // for JOIN
   // Shard int // for MOVE
-  Popularity map[int]int //for SCORE
+  Scores map[int]int //for POPULARITY
   Num int // for QUERY
 }
 
@@ -213,21 +213,12 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
   defer sm.mu.Unlock()
 
   op := Op{Type:"JOIN", GID:args.GID, Servers:args.Servers}
-  seq := sm.myDone + 1
-
-  for {
-    sm.px.Start(seq, op)
-    temp := sm.wait(seq, false)
-    if sm.dead {
-      return nil
+  seq := sm.propose(op, func(a Op, b Op) bool {
+    if a.Type == b.Type && a.GID == b.GID {
+      return true
     }
-    decided := temp.(Op)
-    
-    if decided.Type == "JOIN" && decided.GID == args.GID {
-      break
-    }
-    seq ++
-  }
+    return false
+    })
 
   sm.update(seq, -1)
 
@@ -241,48 +232,15 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
   defer sm.mu.Unlock()
 
   op := Op{Type:"LEAVE", GID: args.GID}
-  seq := sm.myDone + 1
+  sm.propose(op, func(a Op, b Op) bool {
+    if a.Type == b.Type && a.GID == b.GID {
+      return true
+    }
+    return false
+    })
 
-  for {
-    sm.px.Start(seq, op)
-    temp := sm.wait(seq, false)
-    if sm.dead {
-      return nil
-    }
-    decided := temp.(Op)
-    // decided := sm.wait(seq, false).(Op)
-    if decided.Type == "LEAVE" && decided.GID == args.GID {
-      break
-    }
-    seq ++ 
-  }
   return nil
 }
-
-// RPC Move from client
-// func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
-//   // many clients can be calling this
-//   sm.mu.Lock()
-//   defer sm.mu.Unlock()
-
-//   op := Op{Type:"MOVE", GID: args.GID, Shard: args.Shard}
-//   seq := sm.myDone + 1
-
-//   for {
-//     sm.px.Start(seq, op)
-//     temp := sm.wait(seq, false)
-//     if sm.dead {
-//       return nil
-//     }
-//     decided := temp.(Op)
-//     // decided := sm.wait(seq, false).(Op)
-//     if decided.Type == "MOVE" && decided.GID == args.GID && decided.Shard == args.Shard {
-//       break
-//     }
-//     seq ++ 
-//   }
-//   return nil
-// }
 
 // RPC Query from client
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
@@ -291,21 +249,13 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   defer sm.mu.Unlock()
 
   op := Op{Type:"QUERY", Num: args.Num}
-  seq := sm.myDone + 1
 
-  for {
-    sm.px.Start(seq, op)
-    temp := sm.wait(seq, false)
-    if sm.dead {
-      return nil
+  seq := sm.propose(op, func(a Op, b Op) bool {
+    if a.Type == b.Type && a.Num == b.Num {
+      return true
     }
-    decided := temp.(Op)
-    if decided.Type == "QUERY" && decided.Num == args.Num {
-      break
-    }
-    seq ++ 
-  }
-
+    return false
+    })
 
   sm.update(seq, args.Num)
   
@@ -327,7 +277,41 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 }
 
 func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error {
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+
+  op := Op{Type: "POPULARITY", GID:args.Gid, Seq:args.Seq, Scores:args.Popularities}
+ 
+  seq := sm.propose(op, func(a Op, b Op) bool {
+    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq{
+      return true
+    }
+    return false
+    })
+
+  sm.update(seq, -1)
   return nil
+}
+
+// Puts op into a slot in the Paxos log and returns the slot number.
+// Uses equals to figure out whether the op has been put successfully in the log.
+func (sm *ShardMaster) propose(op Op, equals func(a Op, b Op) bool) int {
+  seq := sm.myDone + 1
+
+  for {
+    sm.px.Start(seq, op)
+    temp := sm.wait(seq, false)
+    if sm.dead {
+      return -1
+    }
+    decided := temp.(Op)
+    if equals(decided, op) {
+      break
+    }
+    seq ++
+  }
+
+  return seq
 }
 
 // waits an increasing timeperiod for a particular Paxos instance 
@@ -353,7 +337,6 @@ func (sm *ShardMaster) wait(seq int, isNOP bool) interface{} {
 
     decided, operation := sm.px.Status(seq)
     if decided {
-      // fmt.Println("RETURNING AN OP")
       return operation
     }
 
