@@ -29,11 +29,13 @@ type ShardMaster struct {
 
 type Op struct {
   // Your data here.
-  Type string // JOIN, LEAVE, MOVE, QUERY, NOP(?)
+  Type string // JOIN, LEAVE, SCORE, QUERY, NOP
   Request int64 // random ID for this particular request
-  GID int64 // for JOIN, LEAVE, MOVE
+  GID int64 // for JOIN, LEAVE, SCORE
+  Seq int // for SCORE
   Servers []string // for JOIN
-  Shard int // for MOVE
+  // Shard int // for MOVE
+  Popularity map[int]int //for SCORE
   Num int // for QUERY
 }
 
@@ -89,11 +91,11 @@ func (sm *ShardMaster) newConfig(op Op) {
 
   // a MOVE just moves
   // TODO: don't need move anymore
-  if t == "MOVE"{
-    config.Shards[op.Shard] = op.GID
-    sm.configs = append(sm.configs, config)
-    return
-  }
+  // if t == "MOVE"{
+  //   config.Shards[op.Shard] = op.GID
+  //   sm.configs = append(sm.configs, config)
+  //   return
+  // }
 
   if t == "JOIN"{
     config.Groups[op.GID] = op.Servers
@@ -220,7 +222,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
       return nil
     }
     decided := temp.(Op)
-    // decided := sm.wait(seq, false).(Op)
+    
     if decided.Type == "JOIN" && decided.GID == args.GID {
       break
     }
@@ -258,29 +260,29 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
 }
 
 // RPC Move from client
-func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
-  // many clients can be calling this
-  sm.mu.Lock()
-  defer sm.mu.Unlock()
+// func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
+//   // many clients can be calling this
+//   sm.mu.Lock()
+//   defer sm.mu.Unlock()
 
-  op := Op{Type:"MOVE", GID: args.GID, Shard: args.Shard}
-  seq := sm.myDone + 1
+//   op := Op{Type:"MOVE", GID: args.GID, Shard: args.Shard}
+//   seq := sm.myDone + 1
 
-  for {
-    sm.px.Start(seq, op)
-    temp := sm.wait(seq, false)
-    if sm.dead {
-      return nil
-    }
-    decided := temp.(Op)
-    // decided := sm.wait(seq, false).(Op)
-    if decided.Type == "MOVE" && decided.GID == args.GID && decided.Shard == args.Shard {
-      break
-    }
-    seq ++ 
-  }
-  return nil
-}
+//   for {
+//     sm.px.Start(seq, op)
+//     temp := sm.wait(seq, false)
+//     if sm.dead {
+//       return nil
+//     }
+//     decided := temp.(Op)
+//     // decided := sm.wait(seq, false).(Op)
+//     if decided.Type == "MOVE" && decided.GID == args.GID && decided.Shard == args.Shard {
+//       break
+//     }
+//     seq ++ 
+//   }
+//   return nil
+// }
 
 // RPC Query from client
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
@@ -298,7 +300,6 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
       return nil
     }
     decided := temp.(Op)
-    // decided := sm.wait(seq, false).(Op)
     if decided.Type == "QUERY" && decided.Num == args.Num {
       break
     }
@@ -325,6 +326,10 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   return nil
 }
 
+func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error {
+  return nil
+}
+
 // waits an increasing timeperiod for a particular Paxos instance 
 // to decide on the operation for a given seq
 // when it has been decided, it returns the operation
@@ -343,7 +348,6 @@ func (sm *ShardMaster) wait(seq int, isNOP bool) interface{} {
     // returning nil causes a null pointer reference and makes go panic
     // then we can debug
     if seq < sm.myDone && !isNOP{
-      fmt.Println("seq is ", seq, " but mydone is ", sm.myDone)
       return nil
     }
 
@@ -359,7 +363,6 @@ func (sm *ShardMaster) wait(seq int, isNOP bool) interface{} {
     }
   }
 
-  fmt.Println("SM IS DEAD")
   return nil
 }
 

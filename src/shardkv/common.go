@@ -74,12 +74,6 @@ type ReshardArgs struct {
   Seen map[int64]*Reply
 }
 
-type Popularity struct {
-  Popularities map[int]int
-  Config int
-  Gid int64
-}
-
 func hash(s string) uint32 {
   h := fnv.New32a()
   h.Write([]byte(s))
