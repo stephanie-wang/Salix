@@ -88,6 +88,7 @@ func (sm *ShardMaster) newConfig(op Op) {
   }
 
   // a MOVE just moves
+  // TODO: don't need move anymore
   if t == "MOVE"{
     config.Shards[op.Shard] = op.GID
     sm.configs = append(sm.configs, config)
