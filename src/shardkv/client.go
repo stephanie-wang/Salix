@@ -74,18 +74,19 @@ func key2shard(key string) int {
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
-func (ck *Clerk) Get(key string) string {
+func (ck *Clerk) Read(file string, stale bool) string {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
-  // You'll have to modify Get().
-  args := &GetArgs{
-    Key: key,
+  // You'll have to modify Read().
+  args := &ReadArgs{
+    File: file,
     Id: nrand(),
+    Stale: stale,
   }
 
   for {
-    shard := key2shard(key)
+    shard := key2shard(file)
 
     gid := ck.config.Shards[shard]
 
@@ -96,7 +97,7 @@ func (ck *Clerk) Get(key string) string {
       for _, srv := range servers {
         var reply Reply
         reply.Err = OK
-        ok := call(srv, "ShardKV.Get", args, &reply)
+        ok := call(srv, "ShardKV.Read", args, &reply)
         if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
           return reply.Value
         }
@@ -114,19 +115,19 @@ func (ck *Clerk) Get(key string) string {
   return ""
 }
 
-func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
+func (ck *Clerk) WriteExt(file string, value string, dohash bool) string {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
-  args := &PutArgs{
-    Key: key,
+  args := &WriteArgs{
+    File: file,
     Value: value,
     DoHash: dohash,
     Id: nrand(),
   }
 
   for {
-    shard := key2shard(key)
+    shard := key2shard(file)
 
     gid := ck.config.Shards[shard]
 
@@ -137,7 +138,7 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
       for _, srv := range servers {
         var reply Reply
         reply.Err = OK
-        ok := call(srv, "ShardKV.Put", args, &reply)
+        ok := call(srv, "ShardKV.Write", args, &reply)
         if ok && reply.Err == OK {
           return reply.Value
         }
@@ -154,10 +155,10 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
   }
 }
 
-func (ck *Clerk) Put(key string, value string) {
-  ck.PutExt(key, value, false)
+func (ck *Clerk) Write(file string, value string) {
+  ck.WriteExt(file , value, false)
 }
-func (ck *Clerk) PutHash(key string, value string) string {
-  v := ck.PutExt(key, value, true)
+func (ck *Clerk) WriteHash(file string, value string) string {
+  v := ck.WriteExt(file, value, true)
   return v
 }

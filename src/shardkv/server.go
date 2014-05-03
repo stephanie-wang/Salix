@@ -11,7 +11,6 @@ import "os"
 import "syscall"
 import "encoding/gob"
 import "math/rand"
-import "strconv"
 import "shardmaster"
 
 const Debug=1
@@ -26,15 +25,14 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 // TODO: need nrand id
 type Op struct {
   // Your definitions here.
-  Key string
   Type string
+  File string
   Id int64
-  GetArgs
-  PutArgs
+  ReadArgs
+  WriteArgs
   ReconfigArgs *shardmaster.Config
   ReshardArgs
 }
-
 
 type ShardKV struct {
   mu sync.Mutex
@@ -56,26 +54,29 @@ type ShardKV struct {
   lastConfig int
   // current configuration
   config shardmaster.Config
-  // key value store of shard number -> key-value store
-  store map[int]map[string]string
+  // store of shard number -> list of filenames in that shard
+  store map[int][]string
   // a map of shard number -> map of req id -> reply, for seen requests
   seen map[int]map[int64]*Reply
   // a map of shard number -> config number. Tell us which config the current
   // shard we have is associated with
   shardConfigs map[int]int
+
+  // popularity scores
+  popularities map[int]*PopularityStatus
 }
 
 
-func (kv *ShardKV) Get(args *GetArgs, reply *Reply) error {
+func (kv *ShardKV) Read(args *ReadArgs, reply *Reply) error {
   op := Op{
-    Type: Get,
-    Key: args.Key,
-    GetArgs: *args,
+    Type: Read,
+    File: args.File,
     Id: args.Id,
+    ReadArgs: *args,
   }
   success := kv.proposeOp(op)
   if success {
-    seenReply := kv.seen[key2shard(args.Key)][args.Id]
+    seenReply := kv.seen[key2shard(args.File)][args.Id]
     reply.Err, reply.Value = seenReply.Err, seenReply.Value
   } else {
     reply.Err, reply.Value = ErrWrongGroup, ""
@@ -83,16 +84,16 @@ func (kv *ShardKV) Get(args *GetArgs, reply *Reply) error {
   return nil
 }
 
-func (kv *ShardKV) Put(args *PutArgs, reply *Reply) error {
+func (kv *ShardKV) Write(args *WriteArgs, reply *Reply) error {
   op := Op{
-    Type: Put,
-    Key: args.Key,
-    PutArgs: *args,
+    Type: Write,
+    File: args.File,
     Id: args.Id,
+    WriteArgs: *args,
   }
   success := kv.proposeOp(op)
   if success {
-    seenReply := kv.seen[key2shard(args.Key)][args.Id]
+    seenReply := kv.seen[key2shard(args.File)][args.Id]
     reply.Err, reply.Value = seenReply.Err, seenReply.Value
   } else {
     reply.Err, reply.Value = ErrWrongGroup, ""
@@ -130,8 +131,8 @@ func (kv *ShardKV) doOp(seq int) bool {
   DPrintf("executing op %s seq %d on server %d %d", op.Type, seq, kv.me, kv.gid)
 
   switch op.Type {
-  case Get, Put:
-    shard := key2shard(op.Key)
+  case Read, Write:
+    shard := key2shard(op.File)
     if !(kv.config.Shards[shard] == kv.gid && kv.shardConfigs[shard] == kv.config.Num) {
       // if shard doesn't belong to us or we haven't received that shard yet
       return false
@@ -144,22 +145,11 @@ func (kv *ShardKV) doOp(seq int) bool {
 
     kv.initShardMap(shard)
     var reply Reply
-    if op.Type == Get {
-      // do the get, kvpaxos style
-      if val, inMap := kv.store[shard][op.Key]; inMap {
-        reply = Reply{Value: val}
-      } else {
-        reply = Reply{Err: ErrNoKey}
-      }
+    if op.Type == Read {
+      // TODO: read the file
     } else {
-      // do the put
-      val := op.Value
-      if op.DoHash {
-        prevVal, _ := kv.store[shard][op.Key]
-        val = strconv.Itoa(int(hash(prevVal + val)))
-        reply = Reply{Value: prevVal}
-      }
-      kv.store[shard][op.Key] = val
+      // TODO: write the file
+      // TODO: keep dohash for now so we can test
     }
     // save the reply
     kv.seen[shard][op.Id] = &reply
@@ -194,11 +184,12 @@ func (kv *ShardKV) doOp(seq int) bool {
         reconfig.Shards[shard] != 0 {
         // if shard belonged to us in old config and we have to transfer it to
         // a nonzero gid
+        // TODO: transfer all files
         kv.initShardMap(shard)
         args := &ReshardArgs{
           Num: reconfig.Num,
           ShardNum: shard,
-          Shard: kv.store[shard],
+          //Shard: kv.store[shard],
           Seen: kv.seen[shard],
         }
         go kv.transferShard(args, reconfig.Groups[reconfigGid])
@@ -212,6 +203,8 @@ func (kv *ShardKV) doOp(seq int) bool {
         kv.shardConfigs[shard] = reconfig.Num
       }
 
+      // reset all popularities after a reconfig
+      kv.popularities[shard] = &PopularityStatus{}
     }
 
     kv.config = *reconfig
@@ -240,7 +233,8 @@ func (kv *ShardKV) doOp(seq int) bool {
 
     // if ok to receive this shard, take key-values, take seen requests, update
     // which config this shard belongs to
-    kv.store[args.ShardNum] = args.Shard
+    // TODO: copy the files from the shard over to our fs
+    //kv.store[args.ShardNum] = args.Shard
     kv.seen[args.ShardNum] = args.Seen
     kv.shardConfigs[args.ShardNum] = args.Num
   }
@@ -254,12 +248,13 @@ func (kv *ShardKV) initShardMap(shard int) {
   store and the mapping of shard -> seen requests
   */
   if _, inMap := kv.store[shard]; !inMap {
-    kv.store[shard] = make(map[string]string)
+    kv.store[shard] = []string{}
   }
   if _, inMap := kv.seen[shard]; !inMap {
     kv.seen[shard] = make(map[int64]*Reply)
   }
 }
+
 
 func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   /*
@@ -330,6 +325,8 @@ func (kv *ShardKV) tick() {
       })
     }()
   kv.lastConfig = query.Num
+
+  // TODO: do a popularity ping
 }
 
 func (kv *ShardKV) Reshard(args *ReshardArgs, reply *Reply) error {
@@ -417,9 +414,10 @@ func StartServer(gid int64, shardmasters []string,
   // Don't call Join().
   // start off asking for config 0, so set lastConfig seen to -1
   kv.lastConfig = -1
-  kv.store = make(map[int]map[string]string)
+  kv.store = make(map[int][]string)
   kv.seen = make(map[int]map[int64]*Reply)
   kv.shardConfigs = make(map[int]int)
+  kv.popularities = make(map[int]*PopularityStatus)
 
   //go kv.proposeOp()
 
