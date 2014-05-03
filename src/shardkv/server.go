@@ -7,6 +7,7 @@ import "log"
 import "time"
 import "paxos"
 import "sync"
+import "strconv"
 import "os"
 import "syscall"
 import "encoding/gob"
@@ -150,6 +151,14 @@ func (kv *ShardKV) doOp(seq int) bool {
     } else {
       // TODO: write the file
       // TODO: keep dohash for now so we can test
+      val := op.Value
+      if op.DoHash {
+        // TODO: read file instead of map
+        //prevVal, _ := kv.store[shard][op.Key]
+        prevVal := ""
+        val = strconv.Itoa(int(hash(prevVal + val)))
+        reply = Reply{Value: prevVal}
+      }
     }
     // save the reply
     kv.seen[shard][op.Id] = &reply
