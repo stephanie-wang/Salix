@@ -7,7 +7,7 @@ import "log"
 import "time"
 import "paxos"
 import "sync"
-import "strconv"
+//import "strconv"
 import "os"
 import "syscall"
 import "encoding/gob"
@@ -27,10 +27,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 type Op struct {
   // Your definitions here.
   Type string
-  File string
   Id int64
-  ReadArgs
-  WriteArgs
+  FileArgs
   ReconfigArgs *shardmaster.Config
   ReshardArgs
 }
@@ -64,40 +62,51 @@ type ShardKV struct {
   shardConfigs map[int]int
 
   // popularity scores
+  // TODO: create channel handler to update popularity counts
   popularities map[int]*PopularityStatus
 }
 
 
-func (kv *ShardKV) Read(args *ReadArgs, reply *Reply) error {
+func (kv *ShardKV) Read(args *FileArgs, reply *Reply) error {
   op := Op{
     Type: Read,
-    File: args.File,
     Id: args.Id,
-    ReadArgs: *args,
+    FileArgs: *args,
   }
+
+  initReadBuffer(args.File, args.Bytes, reply)
+  if reply.Err != "" {
+    return nil
+  }
+
+  // stale reads are not proposed to paxos log
+  if args.Stale {
+    reply.N, reply.Err = readAt(args.File, reply.Contents, args.Off)
+    return nil
+  }
+
   success := kv.proposeOp(op)
   if success {
     seenReply := kv.seen[key2shard(args.File)][args.Id]
-    reply.Err, reply.Value = seenReply.Err, seenReply.Value
+    reply.Err, reply.Contents = seenReply.Err, seenReply.Contents
   } else {
-    reply.Err, reply.Value = ErrWrongGroup, ""
+    reply.Err, reply.Contents = ErrWrongGroup, []byte{}
   }
   return nil
 }
 
-func (kv *ShardKV) Write(args *WriteArgs, reply *Reply) error {
+func (kv *ShardKV) Write(args *FileArgs, reply *Reply) error {
   op := Op{
     Type: Write,
-    File: args.File,
     Id: args.Id,
-    WriteArgs: *args,
+    FileArgs: *args,
   }
   success := kv.proposeOp(op)
   if success {
     seenReply := kv.seen[key2shard(args.File)][args.Id]
-    reply.Err, reply.Value = seenReply.Err, seenReply.Value
+    reply.Err, reply.Contents = seenReply.Err, seenReply.Contents
   } else {
-    reply.Err, reply.Value = ErrWrongGroup, ""
+    reply.Err, reply.Contents = ErrWrongGroup, []byte{} 
   }
   return nil
 }
@@ -147,18 +156,19 @@ func (kv *ShardKV) doOp(seq int) bool {
     kv.initShardMap(shard)
     var reply Reply
     if op.Type == Read {
-      // TODO: read the file
+      initReadBuffer(op.File, op.Bytes, &reply)
+      reply.N, reply.Err = readAt(op.File, reply.Contents, op.Off)
     } else {
-      // TODO: write the file
       // TODO: keep dohash for now so we can test
-      val := op.Value
-      if op.DoHash {
-        // TODO: read file instead of map
-        //prevVal, _ := kv.store[shard][op.Key]
-        prevVal := ""
-        val = strconv.Itoa(int(hash(prevVal + val)))
-        reply = Reply{Value: prevVal}
-      }
+      //val := ""
+      //if op.DoHash {
+      //  // TODO: read file instead of map
+      //  //prevVal, _ := kv.store[shard][op.Key]
+      //  prevVal := ""
+      //  val = strconv.Itoa(int(hash(prevVal + val)))
+      //  reply = Reply{Value: prevVal}
+      //}
+      reply.N, reply.Err = write(op.File, op.Contents)
     }
     // save the reply
     kv.seen[shard][op.Id] = &reply
@@ -249,6 +259,57 @@ func (kv *ShardKV) doOp(seq int) bool {
   }
 
   return true
+}
+
+func readAt(filename string, buf []byte, off int64) (int, Err) {
+  f, err := os.Open(filename)
+  defer f.Close()
+  if err != nil {
+    return 0, Err(err.Error())
+  }
+
+  //n, err := f.ReadAt(buf, off)
+  n, err := f.Read(buf)
+  if err != nil {
+    return n, Err(err.Error())
+  }
+  return n, ""
+}
+
+
+func write(filename string, buf []byte) (int, Err) {
+  f, err := os.Create(filename)
+  defer f.Close()
+  if err != nil {
+    return 0, Err(err.Error())
+  }
+
+  n, err := f.Write(buf)
+  if err != nil {
+    return n, Err(err.Error())
+  }
+  return n, ""
+}
+
+func initReadBuffer(filename string, bytes int, reply *Reply) {
+  var size int
+  if bytes == -1 {
+    f, err := os.Open(filename)
+    if err != nil {
+      reply.Err = Err(err.Error())
+      return
+    }
+    fInfo, err := f.Stat()
+    if err != nil {
+      reply.Err = Err(err.Error())
+      return
+    }
+    f.Close()
+    size = int(fInfo.Size())
+  } else {
+    size = bytes
+  }
+  reply.Contents = make([]byte, size)
 }
 
 func (kv *ShardKV) initShardMap(shard int) {

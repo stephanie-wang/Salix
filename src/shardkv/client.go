@@ -11,6 +11,7 @@ type Clerk struct {
   sm *shardmaster.Clerk
   config shardmaster.Config
   // You'll have to modify Clerk.
+  // TODO: consider giving clients unique id instead of reqs...
 }
 
 
@@ -75,14 +76,16 @@ func key2shard(key string) int {
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
-func (ck *Clerk) Read(file string, stale bool) string {
+func (ck *Clerk) Read(file string, bytes int, off int64, stale bool) []byte {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
   // You'll have to modify Read().
-  args := &ReadArgs{
+  args := &FileArgs{
     File: file,
     Id: nrand(),
+    Bytes: bytes,
+    Off: off,
     Stale: stale,
   }
 
@@ -100,7 +103,7 @@ func (ck *Clerk) Read(file string, stale bool) string {
         reply.Err = OK
         ok := call(srv, "ShardKV.Read", args, &reply)
         if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-          return reply.Value
+          return reply.Contents
         }
         if ok && (reply.Err == ErrWrongGroup) {
           break
@@ -113,16 +116,16 @@ func (ck *Clerk) Read(file string, stale bool) string {
     // ask master for a new configuration.
     ck.config = ck.sm.Query(-1)
   }
-  return ""
+  return []byte{}
 }
 
-func (ck *Clerk) WriteExt(file string, value string, dohash bool) string {
+func (ck *Clerk) WriteExt(file string, contents []byte, dohash bool) []byte {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
-  args := &WriteArgs{
+  args := &FileArgs{
     File: file,
-    Value: value,
+    Contents: contents,
     DoHash: dohash,
     Id: nrand(),
   }
@@ -141,7 +144,7 @@ func (ck *Clerk) WriteExt(file string, value string, dohash bool) string {
         reply.Err = OK
         ok := call(srv, "ShardKV.Write", args, &reply)
         if ok && reply.Err == OK {
-          return reply.Value
+          return reply.Contents
         }
         if ok && (reply.Err == ErrWrongGroup) {
           break
@@ -156,10 +159,10 @@ func (ck *Clerk) WriteExt(file string, value string, dohash bool) string {
   }
 }
 
-func (ck *Clerk) Write(file string, value string) {
-  ck.WriteExt(file , value, false)
+func (ck *Clerk) Write(file string, contents []byte) {
+  ck.WriteExt(file, contents, false)
 }
-func (ck *Clerk) WriteHash(file string, value string) string {
-  v := ck.WriteExt(file, value, true)
+func (ck *Clerk) WriteHash(file string, contents[]byte) []byte {
+  v := ck.WriteExt(file, contents, true)
   return v
 }
