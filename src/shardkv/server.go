@@ -35,6 +35,7 @@ type Op struct {
 
 type ShardKV struct {
   mu sync.Mutex
+  popularityMu sync.Mutex
   tickMu sync.Mutex
   l net.Listener
   me int
@@ -62,7 +63,6 @@ type ShardKV struct {
   shardConfigs map[int]int
 
   // popularity scores
-  // TODO: create channel handler to update popularity counts
   popularities map[int]*PopularityStatus
 }
 
@@ -74,24 +74,26 @@ func (kv *ShardKV) Read(args *FileArgs, reply *Reply) error {
     FileArgs: *args,
   }
 
-  initReadBuffer(args.File, args.Bytes, reply)
   if reply.Err != "" {
     return nil
   }
 
   // stale reads are not proposed to paxos log
   if args.Stale {
+    initReadBuffer(args.File, args.Bytes, reply)
     reply.N, reply.Err = readAt(args.File, reply.Contents, args.Off)
+    kv.popularityMu.Lock()
     kv.popularities[key2shard(args.File)].staleReads++
+    kv.popularityMu.Unlock()
     return nil
   }
 
   success := kv.proposeOp(op)
   if success {
     seenReply := kv.seen[key2shard(args.File)][args.Id]
-    reply.Err, reply.Contents = seenReply.Err, seenReply.Contents
+    reply.Err, reply.N, reply.Contents = seenReply.Err, seenReply.N, seenReply.Contents
   } else {
-    reply.Err, reply.Contents = ErrWrongGroup, []byte{}
+    reply.Err = ErrWrongGroup
   }
   return nil
 }
@@ -105,9 +107,9 @@ func (kv *ShardKV) Write(args *FileArgs, reply *Reply) error {
   success := kv.proposeOp(op)
   if success {
     seenReply := kv.seen[key2shard(args.File)][args.Id]
-    reply.Err, reply.Contents = seenReply.Err, seenReply.Contents
+    reply.Err, reply.N, reply.Contents = seenReply.Err, seenReply.N, seenReply.Contents
   } else {
-    reply.Err, reply.Contents = ErrWrongGroup, []byte{}
+    reply.Err = ErrWrongGroup
   }
   return nil
 }
@@ -159,7 +161,9 @@ func (kv *ShardKV) doOp(seq int) bool {
     if op.Type == Read {
       initReadBuffer(op.File, op.Bytes, &reply)
       reply.N, reply.Err = readAt(op.File, reply.Contents, op.Off)
+      kv.popularityMu.Lock()
       kv.popularities[shard].reads++
+      kv.popularityMu.Unlock()
     } else {
       // TODO: keep dohash for now so we can test
       //val := ""
@@ -171,7 +175,9 @@ func (kv *ShardKV) doOp(seq int) bool {
       //  reply = Reply{Value: prevVal}
       //}
       reply.N, reply.Err = write(op.File, op.Contents)
+      kv.popularityMu.Lock()
       kv.popularities[shard].writes++
+      kv.popularityMu.Unlock()
     }
     // save the reply
     kv.seen[shard][op.Id] = &reply
@@ -200,6 +206,8 @@ func (kv *ShardKV) doOp(seq int) bool {
     }
 
     DPrintf("reconfiguring to", reconfig)
+    kv.popularityMu.Lock()
+    defer kv.popularityMu.Unlock()
     for shard, reconfigGid := range reconfig.Shards {
       if kv.config.Shards[shard] == kv.gid &&
         reconfig.Shards[shard] != kv.gid &&
@@ -397,8 +405,23 @@ func (kv *ShardKV) tick() {
       })
     }()
   kv.lastConfig = query.Num
+}
 
-  // TODO: do a popularity ping
+func (kv *ShardKV) popularityPing() {
+  kv.popularityMu.Lock()
+  defer kv.popularityMu.Unlock()
+  // don't allow reconfigs during a ping
+  // is this safe from deadlock?
+  kv.mu.Lock()
+  defer kv.mu.Unlock()
+
+  popularities := make(map[int]int)
+  for shard, gid := range kv.config.Shards {
+    if gid == kv.gid {
+      popularities[shard] = kv.popularities[shard].popularity()
+    }
+  }
+  kv.sm.PopularityPing(popularities, kv.config.Num, kv.gid)
 }
 
 func (kv *ShardKV) Reshard(args *ReshardArgs, reply *Reply) error {
@@ -540,6 +563,7 @@ func StartServer(gid int64, shardmasters []string,
   go func() {
     for kv.dead == false {
       kv.tick()
+      kv.popularityPing()
       time.Sleep(250 * time.Millisecond)
     }
   }()

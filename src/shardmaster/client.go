@@ -118,3 +118,21 @@ func (ck *Clerk) Move(shard int, gid int64) {
     time.Sleep(100 * time.Millisecond)
   }
 }
+
+func (ck *Clerk) PopularityPing(popularities map[int]int, config int, gid int64) {
+  for {
+    // try each known server.
+    for _, srv := range ck.servers {
+      args := &Popularity{
+        Popularities: popularities,
+        Config: config,
+        Gid: gid,
+      }
+      ok := call(srv, "ShardMaster.PopularityPing", args, args)
+      if ok {
+        return
+      }
+    }
+    time.Sleep(100 * time.Millisecond)
+  }
+}
