@@ -17,7 +17,7 @@ type PopularityStatus struct {
   writes int
 }
 func (ps *PopularityStatus) popularity() int {
-  return ps.reads + ps.staleReads + ps.writes
+  return 1 + ps.reads + ps.staleReads + ps.writes
 }
 
 //

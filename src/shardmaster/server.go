@@ -39,6 +39,7 @@ type Op struct {
   ConfigNum int // for POPULARITY
   Servers []string // for JOIN
   Scores map[int]int //for POPULARITY
+  Shard int // for MOVE
   Num int // for QUERY
 }
 
@@ -210,6 +211,31 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
 
   return nil
 }
+
+// RPC Move from client
+ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
+   // many clients can be calling this
+   sm.mu.Lock()
+   defer sm.mu.Unlock()
+
+   op := Op{Type:"MOVE", GID: args.GID, Shard: args.Shard}
+   seq := sm.myDone + 1
+
+   for {
+     sm.px.Start(seq, op)
+     temp := sm.wait(seq, false)
+     if sm.dead {
+       return nil
+     }
+     decided := temp.(Op)
+     // decided := sm.wait(seq, false).(Op)
+     if decided.Type == "MOVE" && decided.GID == args.GID && decided.Shard == args.Shard {
+       break
+     }
+     seq ++ 
+   }
+   return nil
+ }
 
 // RPC Query from client
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
