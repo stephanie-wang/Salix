@@ -24,17 +24,20 @@ type ShardMaster struct {
   configs []Config // indexed by config num
 
   myDone int // higest seq of the Paxos log for which we have applied all operations
+
+  scores [NShards]int // shard # --> popularity score; score can correspond to any config
+  latestHeard map[int64]int // group id --> highest seq # for this current configuration
+  // if the group has not sent a score for the current config, it will not be here
 }
 
 
 type Op struct {
-  // Your data here.
   Type string // JOIN, LEAVE, POPULARITY, QUERY, NOP
   Request int64 // random ID for this particular request
   GID int64 // for JOIN, LEAVE, POPULARITY
   Seq int // for POPULARITY
+  ConfigNum int // for POPULARITY
   Servers []string // for JOIN
-  // Shard int // for MOVE
   Scores map[int]int //for POPULARITY
   Num int // for QUERY
 }
@@ -59,10 +62,86 @@ func (sm *ShardMaster) update(seq int, queried int) {
       }
     }
 
-    sm.newConfig(op.(Op))
+    sm.execute(op.(Op))
     sm.myDone ++
   }
+
   sm.px.Done(sm.myDone)
+}
+
+// executes a particular op in the log
+func (sm *ShardMaster) execute(op Op) {
+  if op.Type == "NOP" || op.Type == "QUERY" {
+    return
+  }
+
+  current := sm.configs[len(sm.configs)-1]
+
+  // popularity score is only valid if it's the current configuration
+  if op.Type == "POPULARITY" && current.Num == op.ConfigNum {
+    seq, ok := sm.latestHeard[op.GID]
+    
+    // only save score if we haven't heard from group before
+    // or if the sequence number from this group is higher than before
+    if !ok || op.Seq > seq {
+      sm.latestHeard[op.GID] = op.ConfigNum
+      for shard, score := range op.Scores {
+        sm.scores[shard] = score
+      }
+    }
+
+    // all groups have reported values for this config
+    if len(sm.latestHeard) == len(current.Groups) {
+      
+      newGroups := make(map[int64][]string)
+      for gid, servers := range current.Groups {
+        newGroups[gid] = servers
+      }
+      sm.createNewConfig(newGroups)
+
+      // none of the score reports are valid w/new config
+      sm.latestHeard = make(map[int64]int)
+    }
+
+  return
+  }
+
+  newGroups := make(map[int64][]string)
+  for gid, servers := range current.Groups {
+    newGroups[gid] = servers
+  }
+
+  if op.Type == "JOIN" {
+    newGroups[op.GID] = op.Servers
+    sm.createNewConfig(newGroups)
+    
+    // none of the score reports are valid w/new config
+    sm.latestHeard = make(map[int64]int)
+  }
+
+  if op.Type == "LEAVE" {
+    delete(newGroups, op.GID)
+    sm.createNewConfig(newGroups)
+
+    // none of the score reports are valid w/new config
+    sm.latestHeard = make(map[int64]int)
+  }
+}
+
+// creates a new configuration with the popularity scores in sm.scores
+// optimizes to make every group have partitions w/an equal sum of popularities
+// appends the new config at the end of sm.configs
+func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
+  last := sm.configs[len(sm.configs)-1]
+  
+  newGroups := make(map[int64]bool)
+  for grp, _ := range groups {
+    newGroups[grp] = true
+  }
+  
+  newShards := loadBalance(sm.scores, last.Shards, newGroups)
+  newConfig := Config{Num: last.Num+1, Shards: newShards, Groups: groups}
+  sm.configs = append(sm.configs, newConfig)
 }
 
 // creates a new config if the op type is not QUERY or NOP
@@ -280,10 +359,10 @@ func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type: "POPULARITY", GID:args.Gid, Seq:args.Seq, Scores:args.Popularities}
+  op := Op{Type: "POPULARITY", GID:args.Gid, Seq:args.Seq, Scores:args.Popularities, ConfigNum: args.Config}
  
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq{
+    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq && a.ConfigNum == b.ConfigNum {
       return true
     }
     return false
@@ -377,6 +456,10 @@ func StartServer(servers []string, me int) *ShardMaster {
   sm.configs[0].Num = 0
 
   sm.myDone = -1
+
+  for i := 0; i<NShards; i++ {
+    sm.scores[i] = 0
+  }
 
   rpcs := rpc.NewServer()
   rpcs.Register(sm)

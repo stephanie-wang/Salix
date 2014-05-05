@@ -24,12 +24,12 @@ const NShards = 10
 
 type Config struct {
   Num int // config number
-  Shards [NShards]int64 // gid
+  Shards [NShards]int64 // shard -> gid
   Groups map[int64][]string // gid -> servers[]
 }
 
 type Popularity struct {
-  Popularities map[int]int
+  Popularities map[int]int // shard # --> popularity score
   Config int
   Gid int64
   Seq int

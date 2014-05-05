@@ -1,10 +1,16 @@
+// 
+// This test suite contains tests relevant to the shardmaster's configuration changes
+// it includes original tests (Basic, Unreliable, FreshQuery) with the Move test taken
+// out since it is not used by Salix.
+// It also contains a Rebalance test that checks the loadbalancing algorithm used.
+// TODO: Completely integrated test with popularity updates & load balancing
+// 
 package shardmaster
 
 import "testing"
 import "runtime"
 import "strconv"
 import "os"
-// import "time"
 import "fmt"
 import "math/rand"
 
@@ -73,6 +79,120 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
   if max > min + 1 {
     t.Fatalf("max %v too much larger than min %v", max, min)
   }
+}
+
+func TestRebalance(t *testing.T) {
+  
+  fmt.Printf("Test: Basic rebalance ...\n")
+  var scores [NShards]int
+  var old [NShards]int64
+  newGroups := make(map[int64]bool)
+  newGroups[1] = true
+
+  // must assign all shards to the new group with gid=1
+  for _, gid := range loadBalance(scores, old, newGroups) {
+    if gid != 1 {
+      t.Fatalf("wrong group %v expected %v", gid, 1)
+    }    
+  }
+
+  for i:=0; i<NShards; i++ {
+    if i<5 {
+      old[i] = 1
+    } else {
+      old[i] = 2
+    }
+  }
+
+  // must have assigned everything back to the group with gid=1
+  for _, gid := range loadBalance(scores, old, newGroups) {
+    if gid != 1 {
+      t.Fatalf("wrong group %v expected %v", gid, 1)
+    }
+  }
+
+  fmt.Printf("... passed \n")
+  fmt.Printf("Test: Least number of moves ... \n")
+
+  newGroups[2] = true
+  newGroups[3] = true
+  
+  // old has 5 1's and 5 2's
+  ans := loadBalance(scores, old, newGroups)
+
+  totals := make(map[int]int)
+  totals[1] = 0
+  totals[2] = 0
+  totals[3] = 0
+  for _, gid := range ans {
+    totals[int(gid)] += 1
+  }
+
+  if totals[1] + totals[2] != 7 {
+    t.Fatalf("need a total of %v shards for gid %v and %v", 7, 1, 2)
+  }
+
+  if totals[3] != 3 {
+    t.Fatalf("need a total of %v shards for gid %v", 3, 3)
+  }
+
+  fmt.Printf("... passed \n")
+  
+  fmt.Printf("Test: Rebalance with popularity ... \n")
+
+  scores = [NShards]int{2, 2, 2, 2, 3, 3, 3, 3, 10, 10}
+  old = [NShards]int64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+  newGroups = make(map[int64]bool)
+  newGroups[1] = true
+  newGroups[2] = true
+  newGroups[3] = true
+  newGroups[4] = true
+
+  // given all this, we should have broken groups evenly into 10
+  totals = make(map[int]int)
+  totals[1] = 0
+  totals[2] = 0
+  totals[3] = 0
+  totals[4] = 0
+
+  ans = loadBalance(scores, old, newGroups)
+  for i, gid := range ans {
+    totals[int(gid)] += scores[i]
+  }
+
+  for i, val := range totals {
+    if val != 10 {
+      t.Fatalf("needed a total popularity of %v for group %v", val, i)
+    }
+  }
+
+  fmt.Printf("... passed \n")
+
+  fmt.Printf("Test: Rebalance with least moves ... \n")
+
+  scores = [NShards]int{2, 2, 2, 2, 3, 3, 3, 3, 10, 10}
+  old = [NShards]int64{1, 1, 2, 2, 1, 1, 2, 2, 3, 3}
+  newGroups = make(map[int64]bool)
+  newGroups[1] = true
+  newGroups[2] = true
+  newGroups[3] = true
+  newGroups[4] = true
+
+  // the fourth group should get the popular shard with score of 10 & nothing else
+  ans = loadBalance(scores, old, newGroups)
+  for i, gid := range ans {
+    if gid == 4 {
+      if i != 8 && i != 9 {
+        t.Fatalf("added group needed the most popular shard")
+      }
+    } else {
+      if gid != old[i] {
+        t.Fatalf("all other groups need to remain the same")
+      }
+    }
+  }
+  
+  fmt.Printf("... passed \n")
 }
 
 func TestBasic(t *testing.T) {
@@ -167,50 +287,6 @@ func TestBasic(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Move ...\n")
-  {
-    var gid3 int64 = 503
-    ck.Join(gid3, []string{"3a", "3b", "3c"})
-    var gid4 int64 = 504
-    ck.Join(gid4, []string{"4a", "4b", "4c"})
-    for i := 0; i < NShards; i++ {
-      cf := ck.Query(-1)
-      if i < NShards / 2 {
-        ck.Move(i, gid3)
-        if cf.Shards[i] != gid3 {
-          cf1 := ck.Query(-1)
-          if cf1.Num <= cf.Num {
-            t.Fatalf("Move should increase Config.Num")
-          }
-        }
-      } else {
-        ck.Move(i, gid4)
-        if cf.Shards[i] != gid4 {
-          cf1 := ck.Query(-1)
-          if cf1.Num <= cf.Num {
-            t.Fatalf("Move should increase Config.Num")
-          }
-        }
-      }
-    }
-    cf2 := ck.Query(-1)
-    for i := 0; i < NShards; i++ {
-      if i < NShards / 2 {
-        if cf2.Shards[i] != gid3 {
-          t.Fatalf("expected shard %v on gid %v actually %v",
-                   i, gid3, cf2.Shards[i])
-        }
-      } else {
-        if cf2.Shards[i] != gid4 {
-          t.Fatalf("expected shard %v on gid %v actually %v",
-                   i, gid4, cf2.Shards[i])
-        }
-      }
-    }
-    ck.Leave(gid3)
-    ck.Leave(gid4)
-  }
-  fmt.Printf("  ... Passed\n")
 
   fmt.Printf("Test: Concurrent leave/join ...\n")
 
