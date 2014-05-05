@@ -11,6 +11,7 @@ type Clerk struct {
   sm *shardmaster.Clerk
   config shardmaster.Config
   // You'll have to modify Clerk.
+  // TODO: consider giving clients unique id instead of reqs...
 }
 
 
@@ -61,6 +62,7 @@ func call(srv string, rpcname string,
 // and please do not change it.
 //
 func key2shard(key string) int {
+  // TODO: think hard about this guy...current mapping won't work for files 
   shard := 0
   if len(key) > 0 {
     shard = int(key[0])
@@ -74,18 +76,21 @@ func key2shard(key string) int {
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
-func (ck *Clerk) Get(key string) string {
+func (ck *Clerk) Read(file string, bytes int, off int64, stale bool) []byte {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
-  // You'll have to modify Get().
-  args := &GetArgs{
-    Key: key,
+  // You'll have to modify Read().
+  args := &FileArgs{
+    File: file,
     Id: nrand(),
+    Bytes: bytes,
+    Off: off,
+    Stale: stale,
   }
 
   for {
-    shard := key2shard(key)
+    shard := key2shard(file)
 
     gid := ck.config.Shards[shard]
 
@@ -96,9 +101,9 @@ func (ck *Clerk) Get(key string) string {
       for _, srv := range servers {
         var reply Reply
         reply.Err = OK
-        ok := call(srv, "ShardKV.Get", args, &reply)
+        ok := call(srv, "ShardKV.Read", args, &reply)
         if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-          return reply.Value
+          return reply.Contents
         }
         if ok && (reply.Err == ErrWrongGroup) {
           break
@@ -111,22 +116,22 @@ func (ck *Clerk) Get(key string) string {
     // ask master for a new configuration.
     ck.config = ck.sm.Query(-1)
   }
-  return ""
+  return []byte{}
 }
 
-func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
+func (ck *Clerk) WriteExt(file string, contents []byte, dohash bool) []byte {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
-  args := &PutArgs{
-    Key: key,
-    Value: value,
+  args := &FileArgs{
+    File: file,
+    Contents: contents,
     DoHash: dohash,
     Id: nrand(),
   }
 
   for {
-    shard := key2shard(key)
+    shard := key2shard(file)
 
     gid := ck.config.Shards[shard]
 
@@ -137,9 +142,9 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
       for _, srv := range servers {
         var reply Reply
         reply.Err = OK
-        ok := call(srv, "ShardKV.Put", args, &reply)
+        ok := call(srv, "ShardKV.Write", args, &reply)
         if ok && reply.Err == OK {
-          return reply.Value
+          return reply.Contents
         }
         if ok && (reply.Err == ErrWrongGroup) {
           break
@@ -154,10 +159,10 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
   }
 }
 
-func (ck *Clerk) Put(key string, value string) {
-  ck.PutExt(key, value, false)
+func (ck *Clerk) Write(file string, contents []byte) {
+  ck.WriteExt(file, contents, false)
 }
-func (ck *Clerk) PutHash(key string, value string) string {
-  v := ck.PutExt(key, value, true)
+func (ck *Clerk) WriteHash(file string, contents[]byte) []byte {
+  v := ck.WriteExt(file, contents, true)
   return v
 }
