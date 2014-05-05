@@ -38,7 +38,7 @@ func loadBalance(scores [NShards]int, old [NShards]int64, newGroups map[int64]bo
 	shards := make([]Shard, NShards)
 	total := 0	// total score is an upperbound for the score of a particular group
 
-	// TODO: algorithm doesn't work if score is 0 so we adjust by adding 2
+	// TODO: algorithm doesn't work if score is 0 so we adjust by adding 1
 	// 		 this means we're technically balancing popularity+1 for all shards
 	//		 does this make a difference?
 	for i, gid := range old {

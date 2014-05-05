@@ -11,7 +11,6 @@ import "syscall"
 import "encoding/gob"
 import "math/rand"
 import "time"
-import "math"
 
 type ShardMaster struct {
   mu sync.Mutex
@@ -144,146 +143,6 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
   sm.configs = append(sm.configs, newConfig)
 }
 
-// creates a new config if the op type is not QUERY or NOP
-// moves the correct config if type is MOVE
-// otherwise rebalances the shards by moving the least number
-// possible
-func (sm *ShardMaster) newConfig(op Op) {
-  t := op.Type
-
-  if t == "QUERY" || t=="NOP" {
-    return
-  }
-
-  latest := sm.configs[len(sm.configs)-1]
-  
-  config := Config{}
-  config.Num = latest.Num + 1
-  config.Shards = latest.Shards
-
-  // map is a reference and must be copied explicitly
-  config.Groups = map[int64][]string{}
-
-  for key, value := range latest.Groups{
-    config.Groups[key] = value
-  }
-
-  // a MOVE just moves
-  // TODO: don't need move anymore
-  // if t == "MOVE"{
-  //   config.Shards[op.Shard] = op.GID
-  //   sm.configs = append(sm.configs, config)
-  //   return
-  // }
-
-  if t == "JOIN"{
-    config.Groups[op.GID] = op.Servers
-  }
-
-  // we should invalidate old group by (temporarily)
-  // assigning the shards it contained to invalid group 0
-  if t == "LEAVE" {
-    delete(config.Groups, op.GID)
-    for i, val := range config.Shards{
-      if val == op.GID {
-        config.Shards[i] = 0
-      }
-    }
-  }
-
-  // creates a freqency map with the group ID as the key
-  // and the number of shards it stores as the value
-  // Groups that don't store any shards right now will have frequency of 0
-  freqs := sm.freq(config.Shards, config.Groups)
-
-  // find the floor of the average number of shards
-  // every group must store at least this number of shards
-  low := int(math.Floor(float64(NShards)/float64(len(config.Groups))))
-
-  // the number of groups that should store (low+1) shards
-  numHigh := NShards - (len(config.Groups) * low)
-
-  // this map used as a set by setting value to true
-  // it contains the groups we find that store (low+1) shards
-  // the length of this should be equal to numHigh when we are done
-  foundHigh := make(map[int64]bool)
-
-  // reassign some shards based on the balance of the groups
-  for i, grp := range config.Shards {
-
-    // invalid group is always reassigned
-    if grp == 0 {
-      assign := sm.laziest(freqs)
-      config.Shards[i] = assign
-      freqs[assign] = freqs[assign] + 1
-    }
-
-    num := freqs[grp]
-    // assign is the group that currently has the least # of shards
-    assign := sm.laziest(freqs)
-    
-    // only numHigh groups can have (low+1) shards
-    if num == low + 1 {
-      if len(foundHigh) > numHigh {
-        config.Shards[i] = assign
-        freqs[assign] = freqs[assign] + 1
-        freqs[grp] = freqs[grp] -1
-      } else {
-        foundHigh[grp] = true
-      }
-    }
-
-    // anything greater than (low+1) must be rebalanced in all cases
-    if num > low+1 {
-      config.Shards[i] = assign
-      freqs[assign] = freqs[assign] + 1
-      freqs[grp] = freqs[grp] -1
-    }
-  } 
-
-  sm.configs = append(sm.configs, config)
-}
-
-// returns the group that is storing the fewest number of shards
-// by looking through the frequency map of groups to the number of shards
-// skips over group 0 (the invalid group)
-func (sm *ShardMaster) laziest(f map[int64]int) int64{
-  minVal := NShards+1
-  var minGrp int64 = -1
-
-  for grp, num := range f {
-    if grp == 0 {
-      continue
-    }
-    if num < minVal {
-      minGrp = grp
-      minVal = num
-    }
-  }
-
-  return minGrp
-}
-
-// creates a freqency map with the group ID as the key
-// and the number of shards it stores as the value
-func (sm *ShardMaster) freq(shards [NShards]int64, groups map[int64][]string) map[int64]int {
-  freq := make(map[int64]int)
-  
-  for grp, _ := range groups {
-    freq[grp] = 0
-  }
-
-  for _, grp := range shards{
-    if grp == 0 {
-      continue
-    }
-
-    // freq[grp] should already be in our map because of
-    // the 1st for loop
-    freq[grp] = freq[grp]+1
-  }
-  return freq
-}
 
 // RPC Join from client
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
@@ -355,6 +214,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   return nil
 }
 
+// RPC Popularity ping from client
 func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
