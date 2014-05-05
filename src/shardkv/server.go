@@ -82,6 +82,7 @@ func (kv *ShardKV) Read(args *FileArgs, reply *Reply) error {
   // stale reads are not proposed to paxos log
   if args.Stale {
     reply.N, reply.Err = readAt(args.File, reply.Contents, args.Off)
+    kv.popularities[key2shard(args.File)].staleReads++
     return nil
   }
 
@@ -106,7 +107,7 @@ func (kv *ShardKV) Write(args *FileArgs, reply *Reply) error {
     seenReply := kv.seen[key2shard(args.File)][args.Id]
     reply.Err, reply.Contents = seenReply.Err, seenReply.Contents
   } else {
-    reply.Err, reply.Contents = ErrWrongGroup, []byte{} 
+    reply.Err, reply.Contents = ErrWrongGroup, []byte{}
   }
   return nil
 }
@@ -158,6 +159,7 @@ func (kv *ShardKV) doOp(seq int) bool {
     if op.Type == Read {
       initReadBuffer(op.File, op.Bytes, &reply)
       reply.N, reply.Err = readAt(op.File, reply.Contents, op.Off)
+      kv.popularities[shard].reads++
     } else {
       // TODO: keep dohash for now so we can test
       //val := ""
@@ -169,6 +171,7 @@ func (kv *ShardKV) doOp(seq int) bool {
       //  reply = Reply{Value: prevVal}
       //}
       reply.N, reply.Err = write(op.File, op.Contents)
+      kv.popularities[shard].writes++
     }
     // save the reply
     kv.seen[shard][op.Id] = &reply
@@ -268,8 +271,7 @@ func readAt(filename string, buf []byte, off int64) (int, Err) {
     return 0, Err(err.Error())
   }
 
-  //n, err := f.ReadAt(buf, off)
-  n, err := f.Read(buf)
+  n, err := f.ReadAt(buf, off)
   if err != nil {
     return n, Err(err.Error())
   }
@@ -484,12 +486,11 @@ func StartServer(gid int64, shardmasters []string,
   // Don't call Join().
   // start off asking for config 0, so set lastConfig seen to -1
   kv.lastConfig = -1
+  // mapping of shard num -> list of filenames in that shard
   kv.store = make(map[int][]string)
   kv.seen = make(map[int]map[int64]*Reply)
   kv.shardConfigs = make(map[int]int)
   kv.popularities = make(map[int]*PopularityStatus)
-
-  //go kv.proposeOp()
 
   rpcs := rpc.NewServer()
   rpcs.Register(kv)
