@@ -9,7 +9,7 @@ package shardmaster
 //
 // The algorithm doesn't explicitly optimize for least number of moves. But if all shards have similar
 // scores, then # of moves are also minimized. Otherwise, we are guaranteed that the most popular shards
-// (possibly the ones with the highest incoming requests) will not be moved around. This means that
+// (the ones with the highest incoming requests) will not be moved around. This means that
 // downtime for these files can be minimized.
 //
 
@@ -38,6 +38,9 @@ func loadBalance(scores [NShards]int, old [NShards]int64, newGroups map[int64]bo
 	shards := make([]Shard, NShards)
 	total := 0	// total score is an upperbound for the score of a particular group
 
+	// TODO: algorithm doesn't work if score is 0 so we adjust by adding 2
+	// 		 this means we're technically balancing popularity+1 for all shards
+	//		 does this make a difference?
 	for i, gid := range old {
 		shards[i] = Shard{Num: i, Score: scores[i]+1, Group: gid}
 		_, ok := newGroups[gid]
