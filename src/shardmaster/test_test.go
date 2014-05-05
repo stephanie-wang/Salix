@@ -1,7 +1,6 @@
 // 
 // This test suite contains tests relevant to the shardmaster's configuration changes
-// it includes original tests (Basic, Unreliable, FreshQuery) with the Move test taken
-// out since it is not used by Salix.
+// it includes original tests (Basic, Unreliable, FreshQuery).
 // It also contains a Rebalance test that checks the loadbalancing algorithm used.
 // TODO: Completely integrated test with popularity updates & load balancing
 // 
@@ -285,6 +284,51 @@ func TestBasic(t *testing.T) {
     }
   }
 
+  fmt.Printf("  ... Passed\n")
+
+  fmt.Printf("Test: Move ...\n")
+  {
+    var gid3 int64 = 503
+    ck.Join(gid3, []string{"3a", "3b", "3c"})
+    var gid4 int64 = 504
+    ck.Join(gid4, []string{"4a", "4b", "4c"})
+    for i := 0; i < NShards; i++ {
+      cf := ck.Query(-1)
+      if i < NShards / 2 {
+        ck.Move(i, gid3)
+        if cf.Shards[i] != gid3 {
+          cf1 := ck.Query(-1)
+          if cf1.Num <= cf.Num {
+            t.Fatalf("Move should increase Config.Num")
+          }
+        }
+      } else {
+        ck.Move(i, gid4)
+        if cf.Shards[i] != gid4 {
+          cf1 := ck.Query(-1)
+          if cf1.Num <= cf.Num {
+            t.Fatalf("Move should increase Config.Num")
+          }
+        }
+      }
+    }
+    cf2 := ck.Query(-1)
+    for i := 0; i < NShards; i++ {
+      if i < NShards / 2 {
+        if cf2.Shards[i] != gid3 {
+          t.Fatalf("expected shard %v on gid %v actually %v",
+                   i, gid3, cf2.Shards[i])
+        }
+      } else {
+        if cf2.Shards[i] != gid4 {
+          t.Fatalf("expected shard %v on gid %v actually %v",
+                   i, gid4, cf2.Shards[i])
+        }
+      }
+    }
+    ck.Leave(gid3)
+    ck.Leave(gid4)
+  }
   fmt.Printf("  ... Passed\n")
 
 

@@ -35,6 +35,7 @@ type Op struct {
   Request int64 // random ID for this particular request
   GID int64 // for JOIN, LEAVE, POPULARITY
   Seq int // for POPULARITY
+  Shard int // for MOVE
   ConfigNum int // for POPULARITY
   Servers []string // for JOIN
   Scores map[int]int //for POPULARITY
@@ -125,6 +126,17 @@ func (sm *ShardMaster) execute(op Op) {
     // none of the score reports are valid w/new config
     sm.latestHeard = make(map[int64]int)
   }
+
+  if op.Type == "MOVE" {
+    var newShards [NShards]int64
+    for i, gid := range current.Shards{
+      newShards[i] = gid
+    }
+    newShards[op.Shard] = op.GID
+    newConfig := Config{Num: current.Num+1, Shards: newShards, Groups: newGroups}
+    sm.configs = append(sm.configs, newConfig)
+  }
+
 }
 
 // creates a new configuration with the popularity scores in sm.scores
@@ -141,6 +153,25 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
   newShards := loadBalance(sm.scores, last.Shards, newGroups)
   newConfig := Config{Num: last.Num+1, Shards: newShards, Groups: groups}
   sm.configs = append(sm.configs, newConfig)
+}
+
+// RPC Move from client
+// used for testing purposes
+func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+
+  op := Op{Type:"MOVE", GID:args.GID, Shard: args.Shard}
+  seq := sm.propose(op, func(a Op, b Op) bool {
+    if a.Type == b.Type && a.Shard == b.Shard {
+      return true
+    }
+    return false
+    })
+
+  sm.update(seq, -1)
+
+  return nil
 }
 
 
