@@ -248,14 +248,12 @@ func TestDeaf(t *testing.T) {
   startByClientWithDeafServers(0, pxa, 1, "xxx", deaf)
   waitn(t, pxa, 1, npaxos-1)
 
-//TODO: next ndecided busted
-
   time.Sleep(1 * time.Second)
   if ndecided(t, pxa, 1) != npaxos - 1 {
     t.Fatalf("a deaf peer heard about a decision")
   }
 
-  pxa[npaxos-1].Start(1, "yyy")
+  startByClient(npaxos-1, pxa, 1, "yyy")
   waitn(t, pxa, 1, npaxos)
 
   fmt.Printf("  ... Passed 5\n")
