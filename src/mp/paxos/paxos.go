@@ -1,9 +1,5 @@
 package paxos
 
-/*
-TODO: will anything bad happen if call propose multiple times on same slot with different values?
-*/
-
 //
 // Paxos library, to be included in an application.
 // Multiple applications will run, each including
@@ -35,13 +31,23 @@ import "math/rand"
 import "math"
 import "time"
 
-const Debug=0
+const Debug=1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
     log.Printf(format, a...)
   }
   return
+}
+
+const printFullVal = false
+
+func valStr(v interface{}) interface{} {
+  if printFullVal {
+    return v
+  } else {
+    return "(v)"
+  }
 }
 
 type Paxos struct {
@@ -262,12 +268,24 @@ func (px *Paxos) preparer(view int) {
           for slot, recvd := range reply.Accepted {
             inst := px.GetInstanceNoLock(slot)
             inst.mu.Lock()
-            if inst.State == STATE_UNKNOWN ||
-                 recvd.State == STATE_DECIDED ||
-                 (recvd.State == STATE_KNOWN && recvd.View_a > inst.View_a) {
+            
+            //don't overwrite my decided value!
+            
+            /*
+            if I'm decided, do nothing
+            otherwise, copy his values
+            */
+            
+            if inst.State != STATE_DECIDED {
+            
+              if inst.State == STATE_UNKNOWN ||
+                   recvd.State == STATE_DECIDED ||
+                   (recvd.State == STATE_KNOWN && recvd.View_a > inst.View_a) {
+                *inst = recvd
+              }
               
-              *inst = recvd
             }
+            
             inst.mu.Unlock()
           }
         }
@@ -281,7 +299,7 @@ func (px *Paxos) preparer(view int) {
         inst.mu.Unlock()
       }
       
-      px.mu.Unlock()
+      px.mu.Unlock()  //move this lock up?
       
       DPrintf("***[%v][view=%v] done preparer(view=%v)\n", px.me, px.view, view)
       return
@@ -291,7 +309,7 @@ func (px *Paxos) preparer(view int) {
 
 func (px *Paxos) proposer(view int, seq int, v interface{}) {
 
-  DPrintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, v)
+  DPrintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
 
   inst := px.GetInstance(seq)
   
@@ -381,7 +399,7 @@ func (px *Paxos) prober(view int, seq int) {
         px.MergeDoneVals(probeReply.DoneVal, i)
         
         if probeReply.Decided {
-          DPrintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, probeReply.DecidedVal, view, seq)
+          DPrintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, valStr(probeReply.DecidedVal), view, seq)
           inst.mu.Lock()
           inst.State = STATE_DECIDED
           inst.DecidedVal = probeReply.DecidedVal
@@ -398,7 +416,13 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 
   px.fdHearFrom(args.Me)
 
-  px.mu.Lock()
+/*
+  if args.Me != px.me {
+    px.mu.Lock()
+    defer px.mu.Unlock()
+  }
+*/
+  
   if args.View >= px.view {
     px.view = args.View
     reply.Accepted = make(map[int]PaxosInstance)   //implicitly contains the N_a and V_a
@@ -413,13 +437,12 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
   } else {
     reply.Ok = false;
   }
-  px.mu.Unlock()
   
   return nil;
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
-  DPrintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, args.V, args.Me)
+  DPrintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
 
   if args.Seq < px.Min() {
     return nil
@@ -437,7 +460,9 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     inst.mu.Lock()
     inst.View_a = args.View
     inst.V_a = args.V
-    inst.State = STATE_KNOWN
+    if inst.State != STATE_DECIDED {
+      inst.State = STATE_KNOWN
+    }
     inst.mu.Unlock()
     reply.Ok = true
   } else {
@@ -451,24 +476,34 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 }
 
 func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
-  DPrintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, args.V, args.Me)
+  DPrintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
 
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
+
+//DPrintf("***[%v][view=%v] 1 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
 
   if args.Seq < px.Min() {
     return nil
   }
   
+//DPrintf("***[%v][view=%v] 2 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  
   px.fdHearFrom(args.Me)
   
+//DPrintf("***[%v][view=%v] 3 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  
   inst := px.GetInstance(args.Seq)
+
+//DPrintf("***[%v][view=%v] 4 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
 
   //IMPORTANT: DO NOT CHANGE v_a!!! set DecidedVal instead  
   inst.mu.Lock()
   inst.State = STATE_DECIDED
   inst.DecidedVal = args.V
   inst.mu.Unlock()
+  
+DPrintf("***[%v][view=%v] 5 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   return nil
 }
@@ -509,7 +544,7 @@ func (px *Paxos) Start(seq int, v interface{}) int {
   view := px.view
   leader := px.leader(view)
 
-  DPrintf("***[%v][view=%v] Start(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, v, leader)
+  DPrintf("***[%v][view=%v] Start(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
 
   px.mu.Lock()
   if seq > px.max {
@@ -629,6 +664,8 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   
   var retDecided bool = false
   var retVal interface{} = nil
+  
+  //fucked!!!
   
   if ok {
     inst.mu.Lock()

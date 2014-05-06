@@ -1,5 +1,4 @@
 //TODO: TestRPCCount (not enough decided)
-//TODO: TestForgetMem (not enough decided)
 //TODO: TestPartition (not enough decided)
 /*
 TODO: TestLots
@@ -364,7 +363,7 @@ func TestForget(t *testing.T) {
 // does paxos forgetting actually free the memory?
 //
 func TestForgetMem(t *testing.T) {
-  return//
+  //return//
 
   runtime.GOMAXPROCS(4)
 
