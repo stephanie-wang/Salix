@@ -35,7 +35,7 @@ import "math/rand"
 import "math"
 import "time"
 
-const Debug=1
+const Debug=0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -132,11 +132,14 @@ type ProbeArgs struct {
   Seq int
   
   Me int
+  DoneVal int
 }
 
 type ProbeReply struct {
   Decided bool
   DecidedVal interface{}
+  
+  DoneVal int
 }
 
 // returns px.instances[seq], creating it if necessary
@@ -371,11 +374,14 @@ func (px *Paxos) prober(view int, seq int) {
       probeArgs := ProbeArgs{}
       probeArgs.Seq = seq
       probeArgs.Me = px.me
+      probeArgs.DoneVal = px.doneVals[px.me]
       probeReply := ProbeReply{}
       
       if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {          
-        DPrintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, probeReply.DecidedVal, view, seq)
+        px.MergeDoneVals(probeReply.DoneVal, i)
+        
         if probeReply.Decided {
+          DPrintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, probeReply.DecidedVal, view, seq)
           inst.mu.Lock()
           inst.State = STATE_DECIDED
           inst.DecidedVal = probeReply.DecidedVal
@@ -469,6 +475,9 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 
 func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   DPrintf("***[%v][view=%v] onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+
+  px.MergeDoneVals(args.DoneVal, args.Me)
+  reply.DoneVal = px.doneVals[px.me]
 
   if args.Seq < px.Min() {
     DPrintf("***[%v][view=%v] nil onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
@@ -655,7 +664,7 @@ func (px *Paxos) fdStart() {
   
   for !px.dead {
     //timeout = 2 milliseconds works for TestBasic
-    time.Sleep(2 * time.Millisecond)
+    time.Sleep(10 * time.Millisecond)
     
     failed := false
     
