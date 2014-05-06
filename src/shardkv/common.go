@@ -1,4 +1,5 @@
 package shardkv
+
 import "shardmaster"
 import "hash/fnv"
 import "crypto/rand"
@@ -51,6 +52,11 @@ type FileArgs struct {
   DoHash bool // for write only
 }
 
+type FileMetadata struct {
+  Filename string
+  Num int
+}
+
 //type WriteArgs struct {
 //  File string
 //  Value string
@@ -90,8 +96,7 @@ type ReconfigArgs struct {
 type ReshardArgs struct {
   Num int // config number
   ShardNum int
-  // TODO: shard should map of filename to file?
-  //Shard map[string]string
+  Shard []string
   Seen map[int64]*Reply
 }
 
