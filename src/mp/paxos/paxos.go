@@ -31,7 +31,7 @@ import "math/rand"
 import "math"
 import "time"
 
-const Debug=1
+const Debug=0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -701,6 +701,8 @@ func (px *Paxos) fdStart() {
   
   for !px.dead {
     //timeout = 2 milliseconds works for TestBasic
+    //use over 50 milliseconds for TestRPCCount
+      //TODO: add more waits between probes/etc.
     time.Sleep(10 * time.Millisecond)
     
     failed := false

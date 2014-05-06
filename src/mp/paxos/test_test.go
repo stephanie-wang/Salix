@@ -1,4 +1,3 @@
-//TODO: TestRPCCount (not enough decided)
 //TODO: TestPartition (not enough decided)
 /*
 TODO: TestLots
@@ -686,7 +685,7 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
 }
 
 func TestPartition(t *testing.T) {
-  return//
+  //return//
 
   runtime.GOMAXPROCS(4)
 
