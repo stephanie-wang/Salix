@@ -365,6 +365,13 @@ func (kv *ShardKV) initShardMap(shard int) {
   }
 }
 
+func (kv *ShardKV) getTmpConfigDir(configNum int) (tmpDir string) {
+  tmpDir := path.Join(kv.root, "tmp", strconv.Itoa(meta.Num))
+  err := os.MkdirAll(tmpDir, 0777)
+  if err != nil {
+    log.Println(err.Error())
+  }
+}
 
 func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   /*
@@ -568,12 +575,7 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
     }
 
     log.Printf("copying file %s config %d", meta.Filename, meta.Num)
-    tmpDir := path.Join(kv.root, "tmp", strconv.Itoa(meta.Num))
-    err := os.MkdirAll(tmpDir, 0777)
-    if err != nil {
-      log.Println(err.Error())
-    }
-
+    tmpDir := kv.getTmpConfigDir(meta.Num)
     f, err := os.Create(path.Join(tmpDir, meta.Filename))
     defer f.Close()
     if err != nil {
