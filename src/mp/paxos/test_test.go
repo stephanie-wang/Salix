@@ -86,6 +86,12 @@ func startByClient(server int, pxa[]*Paxos, seq int, v interface{}) {
     leader := server
     for true {
       //fmt.Println("starting", server, seq, v);
+      
+      for pxa[leader] == nil {
+        //select a new leader
+        leader = (leader + 1) % len(pxa)
+      }
+      
       leader = pxa[leader].Start(seq, v)
       ok, _ := pxa[server].Status(seq)
       if ok {
@@ -103,7 +109,7 @@ func startByClientWithDeafServers(server int, pxa[]*Paxos, seq int, v interface{
     for true {
       //fmt.Println("starting", server, seq, v);
       
-      for deaf[leader] {
+      for deaf[leader] || pxa[leader] == nil {
         //select a new leader
         leader = (leader + 1) % len(pxa)
       }
@@ -564,7 +570,6 @@ func TestOld(t *testing.T) {
   pxa[2] = Make(pxh, 2, nil)
   pxa[3] = Make(pxh, 3, nil)
   startByClient(1, pxa, 1, 111)
-
   waitmajority(t, pxa, 1)
 
   pxa[0] = Make(pxh, 0, nil)
