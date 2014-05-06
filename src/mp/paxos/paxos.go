@@ -120,14 +120,23 @@ type DecidedArgs struct {
   Seq int
   V interface{}
   
-  View int
-  
   Me int
   DoneVal int
 }
 
 type DecidedReply struct {
   DoneVal int
+}
+
+type ProbeArgs struct {
+  Seq int
+  
+  Me int
+}
+
+type ProbeReply struct {
+  Decided bool
+  DecidedVal interface{}
 }
 
 // returns px.instances[seq], creating it if necessary
@@ -194,12 +203,12 @@ func (px *Paxos) lowestUndecided() int {
 
 //installs the view
 func (px *Paxos) preparer(view int) {
-  DPrintf("***[%d][view=%d] preparer(view=%d)\n", px.me, px.view, view)
+  DPrintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
 
   for !px.dead {
     
-    if px.view >= view {
-      DPrintf("***[%d][view=%d] exit-early preparer(view=%d)\n", px.me, px.view, view)
+    if px.view > view {
+      DPrintf("***[%v][view=%v] exit-early preparer(view=%v)\n", px.me, px.view, view)
       return
     }
     
@@ -238,7 +247,7 @@ func (px *Paxos) preparer(view int) {
       }
     }
     
-    DPrintf("***[%d][view=%d] got-majority preparer(view=%d)\n", px.me, px.view, view)
+    DPrintf("***[%v][view=%v] got-majority preparer(view=%v)\n", px.me, px.view, view)
     
     if numPrepareOks >= px.majority {
       px.mu.Lock()
@@ -264,22 +273,22 @@ func (px *Paxos) preparer(view int) {
       for slot, inst := range px.instances {
         inst.mu.Lock()        
         if (inst.State == STATE_KNOWN) {
-          go px.proposer(view, slot, inst.View_a, false)
+          go px.proposer(view, slot, inst.View_a)
         }
         inst.mu.Unlock()
       }
       
       px.mu.Unlock()
       
-      DPrintf("***[%d][view=%d] done preparer(view=%d)\n", px.me, px.view, view)
+      DPrintf("***[%v][view=%v] done preparer(view=%v)\n", px.me, px.view, view)
       return
     }
   }
 }
 
-func (px *Paxos) proposer(view int, seq int, v interface{}, startedByMe bool) {
+func (px *Paxos) proposer(view int, seq int, v interface{}) {
 
-  DPrintf("***[%d][view=%d] proposer(view=%d, seq=%d, v=%d)\n", px.me, px.view, view, seq, v)
+  DPrintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, v)
 
   inst := px.GetInstance(seq)
   
@@ -346,8 +355,40 @@ func (px *Paxos) proposer(view int, seq int, v interface{}, startedByMe bool) {
   }
 }
 
+func (px *Paxos) prober(view int, seq int) {
+
+  DPrintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+
+  inst := px.GetInstance(seq)
+  
+  for inst.State != STATE_DECIDED && !px.dead {        
+    if px.view > view {
+      DPrintf("***[%v][view=%v] exit-early prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+      return
+    }
+  
+    for i:=0; i<px.numPeers && !px.dead; i++ {
+      probeArgs := ProbeArgs{}
+      probeArgs.Seq = seq
+      probeArgs.Me = px.me
+      probeReply := ProbeReply{}
+      
+      if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {          
+        DPrintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, probeReply.DecidedVal, view, seq)
+        if probeReply.Decided {
+          inst.mu.Lock()
+          inst.State = STATE_DECIDED
+          inst.DecidedVal = probeReply.DecidedVal
+          inst.mu.Unlock()
+          return
+        }
+      }      
+    }
+  }
+}
+
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  DPrintf("***[%d][view=%d] onPrepare(args.View=%d, args.Lowest=%d) from %d\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  DPrintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
 
   px.fdHearFrom(args.Me)
 
@@ -372,7 +413,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
-  DPrintf("***[%d][view=%d] onAccept(args.View=%d, args.Seq=%d, args.V=%d) from %d\n", px.me, px.view, args.View, args.Seq, args.V, args.Me)
+  DPrintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, args.V, args.Me)
 
   if args.Seq < px.Min() {
     return nil
@@ -404,7 +445,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 }
 
 func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
-  DPrintf("***[%d][view=%d] onDecided(args.Seq=%d, args.V=%d) from %d\n", px.me, px.view, args.Seq, args.V, args.Me)
+  DPrintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, args.V, args.Me)
 
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
@@ -426,6 +467,27 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
   return nil
 }
 
+func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
+  DPrintf("***[%v][view=%v] onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+
+  if args.Seq < px.Min() {
+    DPrintf("***[%v][view=%v] nil onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    return nil
+  }
+  
+  inst := px.GetInstance(args.Seq)
+
+  inst.mu.Lock()
+  if inst.State == STATE_DECIDED {
+    DPrintf("***[%v][view=%v] decided! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    reply.Decided = true
+    reply.DecidedVal = inst.DecidedVal
+  }
+  inst.mu.Unlock()
+  
+  return nil
+}
+
 //
 // the application wants paxos to start agreement on
 // instance seq, with proposed value v.
@@ -433,11 +495,12 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 // call Status() to find out if/when agreement
 // is reached.
 //
+
 func (px *Paxos) Start(seq int, v interface{}) int {
   view := px.view
   leader := px.leader(view)
 
-  DPrintf("***[%d][view=%d] Start(seq=%d, v=%d) leader=%d\n", px.me, px.view, seq, v, leader)
+  DPrintf("***[%v][view=%v] Start(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, v, leader)
 
   px.mu.Lock()
   if seq > px.max {
@@ -456,7 +519,11 @@ func (px *Paxos) Start(seq int, v interface{}) int {
   px.mu.Unlock()
   
   if leader == px.me {
-    go px.proposer(view, seq, v, true)
+    go px.proposer(view, seq, v)
+  } else {
+//If not leader and missed decided msg,
+//need to probe for decided vals
+    go px.prober(view, seq)
   }
   
   return leader
@@ -597,7 +664,7 @@ func (px *Paxos) fdStart() {
     if target == fdPrevTarget {
       failed = (target != px.me) && (prevLastPing == px.fdLastPing)
       if failed {
-        DPrintf("***[%d][view=%d] failure! of %d. prevLastPing=%d, px.fdLastPing=%d\n", px.me, px.view, target, prevLastPing, px.fdLastPing)
+        DPrintf("***[%v][view=%v] failure! of %v. prevLastPing=%v, px.fdLastPing=%v\n", px.me, px.view, target, prevLastPing, px.fdLastPing)
       }
     }
     fdPrevTarget = px.leader(px.view)

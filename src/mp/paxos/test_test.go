@@ -94,6 +94,28 @@ func startByClient(server int, pxa[]*Paxos, seq int, v interface{}) {
   }()
 }
 
+func startByClientWithDeafServers(server int, pxa[]*Paxos, seq int, v interface{}, deaf []bool) {
+  go func() {
+    leader := server
+    for true {
+      //fmt.Println("starting", server, seq, v);
+      
+      for deaf[leader] {
+        //select a new leader
+        leader = (leader + 1) % len(pxa)
+      }
+      
+      leader = pxa[leader].Start(seq, v)
+      ok, _ := pxa[server].Status(seq)
+      if ok {
+        fmt.Printf("*** [t] done startByClient(seq=%d)\n", seq)
+        break
+      }
+      time.Sleep(1 * time.Millisecond)
+    }
+  }()
+}
+
 func noTestSpeed(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -182,6 +204,8 @@ func TestBasic(t *testing.T) {
   fmt.Printf("  ... Passed 4\n")
 }
 
+//TestDeaf: works with multi-paxos.
+//If leader becomes deaf, it should elect leader to serve the start()
 func TestDeaf(t *testing.T) {
   //return//
 
@@ -204,18 +228,25 @@ func TestDeaf(t *testing.T) {
   startByClient(0, pxa, 0, "hello")
   waitn(t, pxa, 0, npaxos)
 
+  deaf := make([]bool, npaxos)
+  deaf[0] = true
+  deaf[npaxos-1] = true
   os.Remove(pxh[0])
   os.Remove(pxh[npaxos-1])
 
-  startByClient(1, pxa, 1, "goodbye")
+  startByClientWithDeafServers(1, pxa, 1, "goodbye", deaf)
   waitmajority(t, pxa, 1)
   time.Sleep(1 * time.Second)
   if ndecided(t, pxa, 1) != npaxos - 2 {
     t.Fatalf("a deaf peer heard about a decision")
   }
 
-  startByClient(0, pxa, 1, "xxx")
+  deaf[0] = false;
+  startByClientWithDeafServers(0, pxa, 1, "xxx", deaf)
   waitn(t, pxa, 1, npaxos-1)
+
+return
+
   time.Sleep(1 * time.Second)
   if ndecided(t, pxa, 1) != npaxos - 1 {
     t.Fatalf("a deaf peer heard about a decision")
