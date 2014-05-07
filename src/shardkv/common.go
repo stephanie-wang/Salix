@@ -53,7 +53,7 @@ type FileArgs struct {
 }
 
 type FileMetadata struct {
-  Filename string
+  Files []string
   Num int
 }
 
