@@ -213,7 +213,6 @@ func (kv *ShardKV) doOp(seq int) bool {
         reconfig.Shards[shard] != 0 {
         // if shard belonged to us in old config and we have to transfer it to
         // a nonzero gid
-        // TODO: transfer all files
         kv.initShardMap(shard)
 
         //shardFiles := make([]string, len(kv.store[shard]))
@@ -250,8 +249,6 @@ func (kv *ShardKV) doOp(seq int) bool {
     DPrintf("new config on %d %d is %d", kv.me, kv.gid, kv.config.Num)
 
   case Reshard:
-    kv.fileMu.Lock()
-    defer kv.fileMu.Unlock()
     DPrintf("reshard %d for config %d while on config %d on %d %d", op.ShardNum, op.Num, kv.config.Num, kv.me, kv.gid)
 
     if op.Num <= kv.shardConfigs[op.ShardNum] {
@@ -280,7 +277,7 @@ func (kv *ShardKV) doOp(seq int) bool {
       Files: kv.getMissingFiles(tmpDir, op.Shard),
       Num: op.Num,
     }
-    log.Println("resharding; need files on %d %d", kv.me, kv.gid, args.Files)
+    log.Printf("resharding for config %d; need files on %d %d", args.Num, kv.me, kv.gid, args.Files)
     for server := 0; len(args.Files) > 0; server++ {
       serverAddr := op.ShardHolders[server % len(op.ShardHolders)]
       call(serverAddr, "ShardKV.RequestFiles", args, &Reply{})
@@ -303,6 +300,7 @@ func (kv *ShardKV) doOp(seq int) bool {
       tmp.Close()
       f.Close()
     }
+    // TODO: if we're not in the list of shardholders, okay to delete tmp file now!
 
     // if ok to receive this shard, take key-values, take seen requests, update
     // which config this shard belongs to
@@ -465,7 +463,15 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
         attempted = false
       } else {
         // if we haven't attempted this server once yet, transfer files and try again
-        kv.sendFiles(serverAddr + "-net", reply.Shard, args.Num)
+        filepaths := make([]*Filepath, len(reply.Shard))
+        for i, filename := range reply.Shard {
+          filepaths[i] = &Filepath{
+            local: kv.getFilepath(filename),
+            base: filename,
+          }
+        }
+        //kv.sendFiles(serverAddr + "-net", reply.Shard, args.Num)
+        kv.sendFiles(serverAddr + "-net", filepaths, args.Num)
         attempted = true
       }
     }
@@ -499,46 +505,40 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
 
 func (kv *ShardKV) RequestFiles(args *RequestFilesArgs, reply *Reply) error {
   tmpDir := kv.getTmpPathname(args.Num)
-  tmpFiles := make([]string, len(args.Files))
+  filepaths := make([]*Filepath, len(args.Files))
   for i, filename := range args.Files {
-    tmpFiles[i] = path.Join(tmpDir, filename)
+    filepaths[i] = &Filepath{
+      local: path.Join(tmpDir, filename),
+      base: filename,
+    }
   }
-  kv.sendFiles(args.Address, tmpFiles, args.Num)
+  kv.sendFiles(args.Address, filepaths, args.Num)
   return nil
 }
 
 func (kv *ShardKV) MissingFiles(args *ReshardArgs, reply *ReshardReply) error {
-  kv.fileMu.Lock()
-  defer kv.fileMu.Unlock()
-  tmpDir := kv.getTmpPathname(args.Num)
-  reply.Shard = []string{}
-  for _, filename := range args.Shard {
-    _, err := os.Stat(path.Join(tmpDir, filename))
-    if err != nil && os.IsNotExist(err) {
-      reply.Shard = append(reply.Shard, filename)
-    }
-  }
+  reply.Shard = kv.getMissingFiles(kv.getTmpPathname(args.Num), args.Shard)
   return nil
 }
 
-func (kv *ShardKV) sendFiles(dst string, files []string, config int) {
-  log.Printf("transferring files from %d %d", kv.me, kv.gid, files)
-  for _, filename := range files {
+func (kv *ShardKV) sendFiles(dst string, files []*Filepath, config int) {
+  // NOTE: not sure if fileMu.lock is needed here...don't think so
+  for _, filepath := range files {
     conn, err := net.Dial("unix", dst)
     if err != nil {
       log.Println(err)
       continue
     }
 
-    fi, _ := os.Stat(kv.getFilepath(filename))
+    fi, _ := os.Stat(filepath.local)
     size := int(fi.Size())
 
-    log.Printf("transferring file %s from %s to %s", filename, kv.config.Groups[kv.gid][kv.me], dst)
-    meta := []string{strconv.Itoa(config), strconv.Itoa(size), filename}
+    log.Printf("transferring file %s %s from %s to %s", filepath.local, filepath.base, kv.config.Groups[kv.gid][kv.me], dst)
+    meta := []string{strconv.Itoa(config), strconv.Itoa(size), filepath.base}
     metaString := strings.Join(meta, " ") + "\n"
     conn.Write([]byte(metaString))
 
-    f, err := os.Open(kv.getFilepath(filename))
+    f, err := os.Open(filepath.local)
     defer f.Close()
     if err != nil {
       log.Println(err)
@@ -555,7 +555,6 @@ func (kv *ShardKV) sendFiles(dst string, files []string, config int) {
 }
 
 func (kv *ShardKV) receiveFile(conn net.Conn) {
-  // TODO: include checksums in protocol so that we can decide 
   kv.fileMu.Lock()
   defer kv.fileMu.Unlock()
 
@@ -572,6 +571,12 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
   log.Println("receiving file on", kv.me, kv.gid, config, filename)
   tmpDir := kv.getTmpPathname(config)
 
+  // don't write the file again if it already exists and has correct size
+  fi, err := os.Stat(path.Join(tmpDir, filename))
+  if !(err != nil && os.IsNotExist(err)) && int(fi.Size()) == size {
+    return
+  }
+
   f, err := os.Create(path.Join(tmpDir, filename))
   defer f.Close()
   if err != nil {
@@ -581,8 +586,9 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
   w := io.MultiWriter(os.Stdout, f)
   n, err := io.Copy(w, conn)
   if size != int(n) {
+    // copy unsuccessful, so remove file while still under lock
     log.Println("file transfer failed on", kv.me, kv.gid, config, filename)
-    defer os.Remove(path.Join(tmpDir, filename))
+    os.Remove(path.Join(tmpDir, filename))
   }
   if err != nil {
     log.Println(err.Error())

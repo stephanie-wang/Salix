@@ -52,9 +52,9 @@ type FileArgs struct {
   DoHash bool // for write only
 }
 
-type FileMetadata struct {
-  Files []string
-  Num int
+type Filepath struct {
+  local string
+  base string
 }
 
 //type WriteArgs struct {

@@ -58,7 +58,7 @@ func setup(tag string, unreliable bool) ([]string, []int64, [][]string, [][]*Sha
   }
 
   const ngroups = 2   // replica groups
-  const nreplicas = 1 // servers per group
+  const nreplicas = 3 // servers per group
   gids := make([]int64, ngroups)    // each group ID
   ha := make([][]string, ngroups)   // ShardKV ports, [group][replica]
   sa := make([][]*ShardKV, ngroups) // ShardKVs
@@ -119,19 +119,32 @@ func TestTransferShard(t *testing.T) {
   out := ck.Read("testTransfer", len(testString), 0, false)
 
   if string(out) != testString {
-    t.Fatalf("expected %s, got %s", testString, out)
+    t.Fatalf("expected %s from initial read, got %s", testString, out)
   }
 
   mck.Join(gids[1], ha[1])
   mck.Move(key2shard("testTransfer"), gids[1])
   time.Sleep(3 * time.Second)
 
-  f, _ := os.Open(path.Join(ha[1][0] + "-root", "testTransfer"))
-  out = make([]byte, len(testString))
-  f.Read(out)
+  out = ck.Read("testTransfer", len(testString), 0, false)
   if string(out) != testString {
-    t.Fatalf("expected %s, got %s", testString, out)
+    t.Fatalf("expected %s from read after move, got %s", testString, out)
   }
+
+  var count int
+  for _, addr := range ha[1] {
+    f, _ := os.Open(path.Join(addr + "-root", "tmp", "3", "testTransfer"))
+    out = make([]byte, len(testString))
+    f.Read(out)
+    if string(out) == testString {
+      count++
+    }
+    f.Close()
+  }
+  if count <= len(ha[1])/2 {
+    t.Fatalf("file was not transferred to majority of group %d", gids[1])
+  }
+
 
   fmt.Printf("  ... Passed\n")
 }
