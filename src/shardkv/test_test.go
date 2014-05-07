@@ -90,14 +90,14 @@ func TestBasic(t *testing.T) {
 
   ck := MakeClerk(smh)
 
-  ck.Write("a", "x")
-  v := ck.WriteHash("a", "b")
+  ck.Put("a", "x")
+  v := ck.PutHash("a", "b")
   if v != "x" {
-    t.Fatalf("Writehash got wrong value")
+    t.Fatalf("Puthash got wrong value")
   }
   ov := NextValue("x", "b")
-  if ck.Read("a", true) != ov {
-    t.Fatalf("Read got wrong value")
+  if ck.Get("a") != ov {
+    t.Fatalf("Get got wrong value")
   }
 
   keys := make([]string, 10)
@@ -105,7 +105,7 @@ func TestBasic(t *testing.T) {
   for i := 0; i < len(keys); i++ {
     keys[i] = strconv.Itoa(rand.Int())
     vals[i] = strconv.Itoa(rand.Int())
-    ck.Write(keys[i], vals[i])
+    ck.Put(keys[i], vals[i])
   }
 
   // are keys still there after joins?
@@ -113,13 +113,13 @@ func TestBasic(t *testing.T) {
     mck.Join(gids[g], ha[g])
     time.Sleep(1 * time.Second)
     for i := 0; i < len(keys); i++ {
-      v := ck.Read(keys[i], true)
+      v := ck.Get(keys[i])
       if v != vals[i] {
         t.Fatalf("joining; wrong value; g=%v k=%v wanted=%v got=%v",
           g, keys[i], vals[i], v)
       }
       vals[i] = strconv.Itoa(rand.Int())
-      ck.Write(keys[i], vals[i])
+      ck.Put(keys[i], vals[i])
     }
   }
   
@@ -128,13 +128,13 @@ func TestBasic(t *testing.T) {
     mck.Leave(gids[g])
     time.Sleep(1 * time.Second)
     for i := 0; i < len(keys); i++ {
-      v := ck.Read(keys[i], true)
+      v := ck.Get(keys[i])
       if v != vals[i] {
         t.Fatalf("leaving; wrong value; g=%v k=%v wanted=%v got=%v",
           g, keys[i], vals[i], v)
       }
       vals[i] = strconv.Itoa(rand.Int())
-      ck.Write(keys[i], vals[i])
+      ck.Put(keys[i], vals[i])
     }
   }
 
@@ -154,7 +154,7 @@ func TestMove(t *testing.T) {
 
   // insert one key per shard
   for i := 0; i < shardmaster.NShards; i++ {
-    ck.Write(string('0'+i), string('0'+i))
+    ck.Put(string('0'+i), string('0'+i))
   }
 
   // add group 1.
@@ -163,7 +163,7 @@ func TestMove(t *testing.T) {
   
   // check that keys are still there.
   for i := 0; i < shardmaster.NShards; i++ {
-    if ck.Read(string('0'+i), true) != string('0'+i) {
+    if ck.Get(string('0'+i)) != string('0'+i) {
       t.Fatalf("missing key/value")
     }
   }
@@ -178,13 +178,13 @@ func TestMove(t *testing.T) {
   for i := 0; i < shardmaster.NShards; i++ {
     go func(me int) {
       myck := MakeClerk(smh)
-      v := myck.Read(string('0'+me), true)
+      v := myck.Get(string('0'+me))
       if v == string('0'+me) {
         mu.Lock()
         count++
         mu.Unlock()
       } else {
-        t.Fatalf("Read(%v, true) yielded %v\n", i, v)
+        t.Fatalf("Get(%v) yielded %v\n", i, v)
       }
     }(i)
   }
@@ -210,8 +210,8 @@ func TestLimp(t *testing.T) {
 
   ck := MakeClerk(smh)
 
-  ck.Write("a", "b")
-  if ck.Read("a", true) != "b" {
+  ck.Put("a", "b")
+  if ck.Get("a") != "b" {
     t.Fatalf("got wrong value")
   }
 
@@ -224,7 +224,7 @@ func TestLimp(t *testing.T) {
   for i := 0; i < len(keys); i++ {
     keys[i] = strconv.Itoa(rand.Int())
     vals[i] = strconv.Itoa(rand.Int())
-    ck.Write(keys[i], vals[i])
+    ck.Put(keys[i], vals[i])
   }
 
   // are keys still there after joins?
@@ -232,13 +232,13 @@ func TestLimp(t *testing.T) {
     mck.Join(gids[g], ha[g])
     time.Sleep(1 * time.Second)
     for i := 0; i < len(keys); i++ {
-      v := ck.Read(keys[i], true)
+      v := ck.Get(keys[i])
       if v != vals[i] {
         t.Fatalf("joining; wrong value; g=%v k=%v wanted=%v got=%v",
           g, keys[i], vals[i], v)
       }
       vals[i] = strconv.Itoa(rand.Int())
-      ck.Write(keys[i], vals[i])
+      ck.Put(keys[i], vals[i])
     }
   }
   
@@ -250,13 +250,13 @@ func TestLimp(t *testing.T) {
       sa[g][i].kill()
     }
     for i := 0; i < len(keys); i++ {
-      v := ck.Read(keys[i], true)
+      v := ck.Get(keys[i])
       if v != vals[i] {
         t.Fatalf("leaving; wrong value; g=%v k=%v wanted=%v got=%v",
           g, keys[i], vals[i], v)
       }
       vals[i] = strconv.Itoa(rand.Int())
-      ck.Write(keys[i], vals[i])
+      ck.Put(keys[i], vals[i])
     }
   }
 
@@ -285,16 +285,16 @@ func doConcurrent(t *testing.T, unreliable bool) {
       last := ""
       for iters := 0; iters < 3; iters++ {
         nv := strconv.Itoa(rand.Int())
-        v := ck.WriteHash(key, nv)
+        v := ck.PutHash(key, nv)
         if v != last {
           ok = false
-          t.Fatalf("WriteHash(%v) expected %v got %v\n", key, last, v)
+          t.Fatalf("PutHash(%v) expected %v got %v\n", key, last, v)
         }
         last = NextValue(last, nv)
-        v = ck.Read(key, true)
+        v = ck.Get(key)
         if v != last {
           ok = false
-          t.Fatalf("Read(%v, true) expected %v got %v\n", key, last, v)
+          t.Fatalf("Get(%v) expected %v got %v\n", key, last, v)
         }
 
         mymck.Move(rand.Int() % shardmaster.NShards,
@@ -314,13 +314,13 @@ func doConcurrent(t *testing.T, unreliable bool) {
 }
 
 func TestConcurrent(t *testing.T) {
-  fmt.Printf("Test: Concurrent Write/Read/Move ...\n")
+  fmt.Printf("Test: Concurrent Put/Get/Move ...\n")
   doConcurrent(t, false)
   fmt.Printf("  ... Passed\n")
 }
 
 func TestConcurrentUnreliable(t *testing.T) {
-  fmt.Printf("Test: Concurrent Write/Read/Move (unreliable) ...\n")
+  fmt.Printf("Test: Concurrent Put/Get/Move (unreliable) ...\n")
   doConcurrent(t, true)
   fmt.Printf("  ... Passed\n")
 }
