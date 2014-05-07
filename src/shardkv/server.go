@@ -284,6 +284,7 @@ func (kv *ShardKV) doOp(seq int) bool {
     log.Printf("resharding for config %d; need files on %d %d", args.Num, kv.me, kv.gid, args.Files)
     for server := 0; len(args.Files) > 0; server++ {
       serverAddr := op.ShardHolders[server % len(op.ShardHolders)]
+      log.Println("requesting files from server %s", serverAddr)
       call(serverAddr, "ShardKV.RequestFiles", args, &Reply{})
       args.Files = kv.getMissingFiles(tmpDir, args.Files)
     }
@@ -437,11 +438,15 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   // keep transferring until a majority of servers have files they need
   // TODO: change this later so that we set a minimum
   attempted := false
-  args.ShardHolders = make([]string, len(servers)/2 + 1)
   var server int
   var shardHolder int
-  for shardHolder < len(args.ShardHolders) {
+  shardHolders := make(map[string]bool)
+  for shardHolder < len(servers)/2 + 1 {
     serverAddr := servers[server % len(servers)]
+    if _, ok := shardHolders[serverAddr]; ok {
+      // skip servers that already have shard
+      continue
+    }
     reply := &ReshardReply{
       Shard: []string{},
     }
@@ -453,32 +458,40 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
     }
 
     if len(reply.Shard) == 0 {
-      // if the server has all files in shard
-      args.ShardHolders[shardHolder] = serverAddr
+      // if the server has all files in shard, record and move to next
+      shardHolders[serverAddr] = true
       shardHolder++
       server++
       attempted = false
-    } else {
-      // server still missing some shards
-      if attempted {
-        // if we have already attempted this server, file transfer must have
-        // failed - try next server
-        server++
-        attempted = false
-      } else {
-        // if we haven't attempted this server once yet, transfer files and try again
-        filepaths := make([]*Filepath, len(reply.Shard))
-        for i, filename := range reply.Shard {
-          filepaths[i] = &Filepath{
-            local: kv.getFilepath(filename),
-            base: filename,
-          }
-        }
-        //kv.sendFiles(serverAddr + "-net", reply.Shard, args.Num)
-        kv.sendFiles(serverAddr + "-net", filepaths, args.Num)
-        attempted = true
-      }
+      continue
     }
+
+    // server still missing some shards
+    if attempted {
+      // if we have already attempted this server, file transfer must have
+      // failed - try next server
+      server++
+      attempted = false
+    } else {
+      // if we haven't attempted this server once yet, transfer files and try again
+      filepaths := make([]*Filepath, len(reply.Shard))
+      for i, filename := range reply.Shard {
+        filepaths[i] = &Filepath{
+          local: kv.getFilepath(filename),
+          base: filename,
+        }
+      }
+      //kv.sendFiles(serverAddr + "-net", reply.Shard, args.Num)
+      kv.sendFiles(serverAddr + "-net", filepaths, args.Num)
+      attempted = true
+    }
+  }
+
+  args.ShardHolders = make([]string, len(servers)/2 + 1)
+  var i int
+  for serverAddr, _ := range shardHolders {
+    args.ShardHolders[i] = serverAddr
+    i++
   }
 
   // propose reshard until successful
