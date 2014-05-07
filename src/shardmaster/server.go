@@ -136,7 +136,6 @@ func (sm *ShardMaster) execute(op Op) {
     newConfig := Config{Num: current.Num+1, Shards: newShards, Groups: newGroups}
     sm.configs = append(sm.configs, newConfig)
   }
-
 }
 
 // creates a new configuration with the popularity scores in sm.scores
