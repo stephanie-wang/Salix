@@ -278,6 +278,7 @@ func (kv *ShardKV) doOp(seq int) bool {
     args := &RequestFilesArgs{
       Address: kv.config.Groups[kv.gid][kv.me] + "-net",
       Files: kv.getMissingFiles(tmpDir, op.Shard),
+      Num: op.Num,
     }
     log.Println("resharding; need files on %d %d", kv.me, kv.gid, args.Files)
     for server := 0; len(args.Files) > 0; server++ {
