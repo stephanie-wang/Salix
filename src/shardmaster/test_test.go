@@ -83,8 +83,8 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
 func TestRebalance(t *testing.T) {
   
   fmt.Printf("Test: Basic rebalance ...\n")
-  var scores [NShards]int
-  var old [NShards]int64
+  var scores [NShards]int = [NShards]int{1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
+  var old [NShards]int64 
   newGroups := make(map[int64]bool)
   newGroups[1] = true
 
@@ -419,7 +419,8 @@ func TestUnreliable(t *testing.T) {
     // don't turn on unreliable because the assignment
     // doesn't require the shardmaster to detect duplicate
     // client requests.
-    // sma[i].unreliable = true
+    // TODO: still passes with unreliable turned on?
+    sma[i].unreliable = true
   }
 
   ck := MakeClerk(kvh)
