@@ -94,16 +94,35 @@ func (sm *ShardMaster) update(seq int, queried int) {
   sm.px.Done(sm.myDone)
 }
 
+// apply the NOP op in the log
 func (sm *ShardMaster) doNOP(op Op) {
   return
 }
 
+// apply the QUERY op in the log
 func (sm *ShardMaster) doQUERY(op Op){
   return
 }
-
+  
+// apply the MOVE op in the log
 func (sm *ShardMaster) doMOVE(op Op){
-
+  current := sm.configs[len(sm.configs)-1]
+  
+  newGroups := make(map[int64][]string)
+  
+  for gid, servers := range current.Groups {
+    newGroups[gid] = servers
+  }
+  
+  var newShards [NShards]int64
+  for i, gid := range current.Shards {
+      newShards[i] = gid
+  }
+  
+  newShards[op.Shard] = op.GID
+  newConfig := Config{Num: current.Num+1, Shards: newShards, Groups: newGroups}
+  sm.writeConfig(newConfig)
+  sm.configs = append(sm.configs, newConfig)
 }
 
 func (sm *ShardMaster) doJOIN(op Op){
