@@ -88,6 +88,10 @@ func (kv *ShardKV) Read(args *FileArgs, reply *Reply) error {
 
   // stale reads are not proposed to paxos log
   if args.Stale {
+    if kv.config.Shards[key2shard(args.File)] != kv.gid {
+      reply.Err = ErrWrongGroup
+      return nil
+    }
     initReadBuffer(kv.getFilepath(args.File), args.Bytes, reply)
     reply.N, reply.Err = kv.readAt(args.File, reply.Contents, args.Off, true)
     return nil
@@ -496,7 +500,7 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
     server++
   }
 
-  // TODO: all files now transferred, so delete local copy of files
+  // all files now transferred, so delete local copy of files
   for _, filename := range args.Shard {
     os.Remove(kv.getFilepath(filename))
   }
@@ -548,7 +552,7 @@ func (kv *ShardKV) sendFiles(dst string, files []*Filepath, config int) {
       log.Println(err)
     }
 
-    // TODO: is it okay to keep the connection open on this end?
+    // NOTE: is it okay to keep the connection open on this end?
     //   not sure if keeping it open lowers file transfer failure rate...?
     conn.Close()
   }
