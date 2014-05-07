@@ -247,35 +247,76 @@ func (kv *ShardKV) doOp(seq int) bool {
     DPrintf("new config on %d %d is %d", kv.me, kv.gid, kv.config.Num)
 
   case Reshard:
-    args := op.ReshardArgs
+    DPrintf("reshard %d for config %d while on config %d on %d %d", op.ShardNum, op.Num, kv.config.Num, kv.me, kv.gid)
 
-    DPrintf("reshard %d for config %d while on config %d on %d %d", args.ShardNum, args.Num, kv.config.Num, kv.me, kv.gid)
-
-    if args.Num <= kv.shardConfigs[args.ShardNum] {
+    if op.Num <= kv.shardConfigs[op.ShardNum] {
       // if we've already received the shard for this config number
       return true
     }
-    if args.Num != kv.shardConfigs[args.ShardNum] + 1 {
+    if op.Num != kv.shardConfigs[op.ShardNum] + 1 {
       // if the shard we're receiving is more than one config away from the
       // current shard
       return false
     }
 
-    if args.Num != kv.config.Num {
+    if op.Num != kv.config.Num {
       // if the shard we're receiving doesn't match the config we're trying to
       // reconfigure to
       return false
     }
 
+    tmpDir := kv.getTmpConfigDir(op.Num)
+
+    // make array of missing files 
+    // if any files missing, request until successful
+    // NOTE: cannot return false in this case because group will be out of sync
+    args := &RequestFilesArgs{
+      Address: kv.config.Groups[kv.gid][kv.me],
+      Files: kv.getMissingFiles(tmpDir, op.Shard),
+    }
+    for server := 0; len(args.Files) > 0; server++ {
+      // TODO: don't join with tmpdir on the receiving end 
+      serverAddr := op.ShardHolders[server % len(op.ShardHolders)]
+      call(serverAddr, "ShardKV.RequestFiles", args, &Reply{})
+      args.Files = kv.getMissingFiles(tmpDir, args.Files)
+    }
+
+    //copy over all files from tmp 
+    for _, filename := range op.Shard {
+      tmp, err := os.Open(path.Join(tmpDir, filename))
+      if err != nil {
+        // TODO: what to do in this case?
+        log.Println(err.Error())
+      }
+      f, err := os.Create(filename)
+      if err != nil {
+        // TODO: what to do in this case?
+        log.Println(err.Error())
+      }
+      io.Copy(f, tmp)
+      tmp.Close()
+      f.Close()
+    }
+
     // if ok to receive this shard, take key-values, take seen requests, update
     // which config this shard belongs to
-    // TODO: copy the files from the shard over to our fs
-    kv.store[args.ShardNum] = args.Shard
-    kv.seen[args.ShardNum] = args.Seen
-    kv.shardConfigs[args.ShardNum] = args.Num
+    kv.store[op.ShardNum] = op.Shard
+    kv.seen[op.ShardNum] = op.Seen
+    kv.shardConfigs[op.ShardNum] = op.Num
   }
 
   return true
+}
+
+func (kv *ShardKV) getMissingFiles(root string, files []string) []string {
+  missing := []string{}
+  for _, filename := range files {
+    _, err := os.Stat(path.Join(root, filename))
+    if err != nil && os.IsNotExist(err) {
+      missing = append(missing, filename)
+    }
+  }
+  return missing
 }
 
 func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (int, Err) {
@@ -365,12 +406,13 @@ func (kv *ShardKV) initShardMap(shard int) {
   }
 }
 
-func (kv *ShardKV) getTmpConfigDir(configNum int) (tmpDir string) {
-  tmpDir := path.Join(kv.root, "tmp", strconv.Itoa(meta.Num))
+func (kv *ShardKV) getTmpConfigDir(configNum int) string {
+  tmpDir := path.Join(kv.root, "tmp", strconv.Itoa(configNum))
   err := os.MkdirAll(tmpDir, 0777)
   if err != nil {
     log.Println(err.Error())
   }
+  return tmpDir
 }
 
 func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
@@ -379,37 +421,85 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   Receiving server might not be in the right group yet, according to sender's
   config, so will send back ErrWrongGroup if it's not ready for this shard yet
   */
-  DPrintf("shard %d has files", args.ShardNum, args.Shard)
-  var server int
 
+  // keep transferring until a majority of servers have files they need
+  // TODO: change this later so that we set a minimum
+  var server int
+  attempted := false
+  args.ShardHolders = make([]string, len(servers)/2 + 1)
+  var shardHolder int
+  for shardHolder < len(args.ShardHolders) {
+    serverAddr := servers[server % len(servers)] + "-net"
+    reply := &ReshardReply{
+      Shard: []string{},
+    }
+    ok := call(serverAddr, "ShardKV.ReceiveShard", args, &reply)
+    // server unreachable?
+    if !ok {
+      server++
+      continue
+    }
+
+    if len(reply.Shard) == 0 {
+      // if the server has all files in shard
+      args.ShardHolders[shardHolder] = serverAddr
+      server++
+      attempted = false
+    } else {
+      // server still missing some shards
+      if attempted {
+        // if we have already attempted this server, file transfer must have
+        // failed - try next server
+        server++
+        attempted = false
+      } else {
+        // if we haven't attempted this server once yet, transfer files and try again
+        kv.sendFiles(serverAddr, reply.Shard, args.Num)
+        attempted = true
+      }
+    }
+  }
+
+  // propose reshard until successful
+  DPrintf("shard %d has files", args.ShardNum, args.Shard)
+  server = 0
   for ok := false; !ok; {
+    serverAddr := servers[server % len(servers)]
     DPrintf("transferring shard %d for config %d from %d %d to %d",
       args.ShardNum,
       args.Num,
       kv.me,
       kv.gid,
       server % len(servers))
-    var reply Reply
-    ok = call(servers[server % len(servers)], "ShardKV.Reshard", args, &reply)
+    var reply ReshardReply
+    ok = call(serverAddr, "ShardKV.Reshard", args, &reply)
     if !ok || reply.Err == ErrWrongGroup {
       ok = false
     }
-
-    if len(args.Shard) == 0 {
-      continue
-    }
-
-    // open network connections for each file and read to the client
-
     server++
   }
+
+  // TODO: all files now transferred, so delete local copy of files
+  //for _, filename := range args.Shard {
+  //  os.Remove(filename)
+  //}
+
 }
 
-func transferFile(dst string, files []string) bool {
-  conn, err := net.Dial("unix", servers[server % len(servers)] + "-net")
+func (kv *ShardKV) RequestFiles(args *RequestFilesArgs, reply *Reply) error {
+  tmpDir := kv.getTmpConfigDir(args.Num)
+  tmpFiles := make([]string, len(args.Files))
+  for i, filename := range args.Files {
+    tmpFiles[i] = path.Join(tmpDir, filename)
+  }
+  kv.sendFiles(args.Address + "-net", tmpFiles, args.Num)
+  return nil
+}
+
+func (kv *ShardKV) sendFiles(dst string, files []string, config int) {
+  conn, err := net.Dial("unix", dst)
   if err != nil {
     log.Println(err)
-    return false
   }
   defer conn.Close()
   encoder := gob.NewEncoder(conn)
@@ -419,20 +509,32 @@ func transferFile(dst string, files []string) bool {
 
     meta := &FileMetadata{
       Filename: filename,
-      Num: args.Num,
+      Num: config,
     }
     encoder.Encode(meta)
 
     f, err := os.Open(filename)
     defer f.Close()
     if err != nil {
-      // TODO: not really sure what to do if this doesn't work...
       log.Println(err)
     }
-    io.Copy(conn, f)
+    _, err = io.Copy(conn, f)
+    if err != nil {
+      log.Println(err)
+    }
   }
+}
 
-  return true
+func (kv *ShardKV) ReceiveShard(args *ReshardArgs, reply *ReshardReply) error {
+  tmpDir := kv.getTmpConfigDir(args.Num)
+  reply.Shard = []string{}
+  for _, filename := range args.Shard {
+    _, err := os.Stat(path.Join(tmpDir, filename))
+    if err != nil && os.IsNotExist(err) {
+      reply.Shard = append(reply.Shard, filename)
+    }
+  }
+  return nil
 }
 
 func (kv *ShardKV) wait(condition func() bool) {
@@ -564,8 +666,7 @@ func (kv *ShardKV) kill() {
   kv.px.Kill()
 }
 
-func (kv *ShardKV) receiveFile(conn net.Conn) {
-  // TODO: make this loop until connection closes
+func (kv *ShardKV) receiveFiles(conn net.Conn) {
   for {
     dec := gob.NewDecoder(conn)
     meta := &FileMetadata{}
@@ -686,7 +787,7 @@ func StartServer(gid int64, shardmasters []string,
       if err != nil {
         log.Println(err.Error())
       }
-      go kv.receiveFile(conn)
+      go kv.receiveFiles(conn)
     }
   }()
 

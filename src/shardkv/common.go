@@ -96,8 +96,20 @@ type ReconfigArgs struct {
 type ReshardArgs struct {
   Num int // config number
   ShardNum int
-  Shard []string
+  Shard []string        // list of files in the shard
+  ShardHolders []string // list of servers holding this shard
   Seen map[int64]*Reply
+}
+
+type ReshardReply struct {
+  Err Err
+  Shard []string // list of missing files for this shard
+}
+
+type RequestFilesArgs struct {
+  Address string
+  Num int // config number
+  Files []string
 }
 
 func hash(s string) uint32 {
