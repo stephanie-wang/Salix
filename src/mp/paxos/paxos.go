@@ -403,17 +403,16 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
         px.fdHearFrom(i)
       }
       
-      if px.view > view { //need something more here?
-        px.Dprintf("***[%v][view=%v] aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
-
+      if px.view > view {
+        px.Dprintf("***[%v][view=%v] 1 aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
         return
       }
       
-//      if acceptReply.View > view {
-//        px.view = acceptReply.View
-//        px.Dprintf("***[%v][view=%v] aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
-//        return
-//      }
+      if acceptReply.View > view {
+        px.view = acceptReply.View
+        px.Dprintf("***[%v][view=%v] 2 aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+        return
+      }
       
       if acceptReply.Ok {
         numAcceptOks = numAcceptOks + 1          

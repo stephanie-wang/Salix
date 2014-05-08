@@ -1,4 +1,3 @@
-//TODO: TestPartition (not enough decided)
 /*
 TODO: TestLots
 --- FAIL: TestLots (25.13 seconds)
@@ -441,7 +440,7 @@ func TestForgetMem(t *testing.T) {
 }
 
 func TestRPCCount(t *testing.T) {
-  return//
+  //return//
 
   runtime.GOMAXPROCS(4)
 
@@ -726,8 +725,8 @@ func TestPartition(t *testing.T) {
   
   
   
-  Debug = 1
-  PrintNdecided = 1
+  Debug = 0
+  PrintNdecided = 0
   
   
   
@@ -769,8 +768,7 @@ func TestPartition(t *testing.T) {
 
   //DPrintf("kobe")
 
-  //20
-  for iters := 0; iters < 1; iters++ {
+  for iters := 0; iters < 20; iters++ {
     seq++
 
     part(t, tag, npaxos, []int{0,1,2}, []int{3,4}, []int{})
@@ -787,13 +785,10 @@ func TestPartition(t *testing.T) {
     part(t, tag, npaxos, []int{0,1}, []int{2,3,4}, []int{})
     waitn(t, pxa, seq, npaxos)
   }
-  
-return
 
   fmt.Printf("  ... Passed 15\n")
 
   fmt.Printf("Test: One peer switches partitions, unreliable ...\n")
-
 
   for iters := 0; iters < 20; iters++ {
     seq++
@@ -824,7 +819,7 @@ return
 }
 
 func TestLots(t *testing.T) {
-  return//
+  //return//
 
   runtime.GOMAXPROCS(4)
 
