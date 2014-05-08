@@ -4,6 +4,8 @@ TODO: TestLots
         test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
         test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
         test_test.go:35: decided values do not match; seq=4 i=2 v=9 v1=5
+        
+//  cls;  ../../multitest.sh -run TestPartition 2>&1 | grep -v unexpected | grep -v connection | grep -v write
 */
 
 package paxos
@@ -820,6 +822,8 @@ func TestPartition(t *testing.T) {
 
 func TestLots(t *testing.T) {
   //return//
+
+  Debug = 1
 
   runtime.GOMAXPROCS(4)
 

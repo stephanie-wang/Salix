@@ -1,3 +1,8 @@
+/*
+TODO: when starting a new prepare thread, make sure there are no other threads running!
+also, separate decided logic.
+*/
+
 package paxos
 
 //
@@ -40,7 +45,7 @@ func Dprintf(format string, a ...interface{}) (n int, err error) {
   return
 }
 
-const printFullVal = false
+const printFullVal = true
 
 func valStr(v interface{}) interface{} {
   if printFullVal {
@@ -444,9 +449,9 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     }
     
     if inst.State != STATE_DECIDED {
-      if px.me == 3 {
-        px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
-      }
+      //if px.me == 3 {
+      //  px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+      //}
     } else {
       px.Dprintf("***[%v][view=%v] done proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
     }
@@ -561,9 +566,9 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
   inst := px.GetInstance(args.Seq)
 
-  if args.Me == 3 {
+  //if args.Me == 3 {
     px.Dprintf("***[%v][view=%v] %v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.State, args.View, args.Seq, valStr(args.V), args.Me)
-  }
+  //}
 
   if args.Seq < px.Min() {
     return nil
