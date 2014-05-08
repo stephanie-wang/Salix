@@ -386,6 +386,10 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
       
       if px.view > view {
         px.Dprintf("***[%v][view=%v] aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+        
+        //start a prober for the new view?
+        go px.prober(px.view, seq)
+        
         return
       }
       
@@ -426,6 +430,8 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     
     if inst.State != STATE_DECIDED {
       //px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+    } else {
+      px.Dprintf("***[%v][view=%v] done proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
     }
   }
 }
@@ -434,6 +440,7 @@ func (px *Paxos) prober(view int, seq int) {
 
   inst := px.GetInstance(seq)
   
+  //TODO: lock this
   if view <= inst.proberView {
     return
   }
@@ -792,7 +799,7 @@ func (px *Paxos) fdStart() {
     if target == fdPrevTarget {
       failed = (target != px.me) && (prevLastPing == px.fdLastPing)
       if failed {
-        px.Dprintf("***[%v][view=%v] failure! of %v. px.timeout=%v, prevLastPing=%v, px.fdLastPing=%v\n", px.me, view, target, px.timeout, prevLastPing, px.fdLastPing)
+        //px.Dprintf("***[%v][view=%v] failure! of %v. px.timeout=%v, prevLastPing=%v, px.fdLastPing=%v\n", px.me, view, target, px.timeout, prevLastPing, px.fdLastPing)
       }
     }
     fdPrevTarget = target
@@ -849,7 +856,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px.seen = make(map[int]interface{})
   px.fdLastPing = time.Now()
   px.fdInstall = -1
-  px.timeout = 10
+  px.timeout = 100
   px.aimd = false
 
   if rpcs != nil {

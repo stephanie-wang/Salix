@@ -721,8 +721,13 @@ func TestPartition(t *testing.T) {
 
   seq := 0
 
-  //PrintNdecided = 1
+  
+  
+  
   Debug = 1
+  PrintNdecided = 1
+  
+  
   
   //time.Sleep(10000*time.Millisecond)
 
@@ -731,23 +736,19 @@ func TestPartition(t *testing.T) {
   part(t, tag, npaxos, []int{0,2}, []int{1,3}, []int{4})
   startByClient(1, pxa, seq, 111)
   checkmax(t, pxa, seq, 0)
-  
-  fmt.Printf("  ... Passed 12\n")
 
-  return
+  fmt.Printf("  ... Passed 12\n")
 
   fmt.Printf("Test: Decision in majority partition ...\n")
 
   part(t, tag, npaxos, []int{0}, []int{1,2,3}, []int{4})
   time.Sleep(2 * time.Second)
   
-
-  
   waitmajority(t, pxa, seq)
 
   fmt.Printf("  ... Passed 13\n")
 
-return
+
 
   fmt.Printf("Test: All agree after full heal ...\n")
 
@@ -762,8 +763,8 @@ return
   fmt.Printf("Test: One peer switches partitions ...\n")
 
   fmt.Println("-----------------------------------------")
-  Debug = 1
-  PrintNdecided = 1
+  
+
   //DPrintf("kobe")
 
   //20
@@ -777,7 +778,9 @@ return
     if ndecided(t, pxa, seq) > 3 {
       t.Fatalf("too many decided")
     }
-    
+
+return
+
     fmt.Println("*******************************************")
     
     part(t, tag, npaxos, []int{0,1}, []int{2,3,4}, []int{})
