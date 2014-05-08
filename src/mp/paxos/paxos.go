@@ -344,6 +344,25 @@ func (px *Paxos) preparer(view int) {
   }
 }
 
+func (px *Paxos) driver(seq int, v interface{}) {
+  inst := px.GetInstance(seq)
+  
+  for inst.State != STATE_DECIDED && !px.dead {      
+    view := px.view
+    leader := px.leader(view)
+
+    px.Dprintf("***[%v][view=%v] driver(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
+    
+    if leader == px.me {
+      px.proposer(view, seq, v)
+    } else {
+      px.prober(view, seq)
+    }
+  }
+  
+  px.Dprintf("***[%v][view=%v] exit driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
+}
+
 func (px *Paxos) proposer(view int, seq int, v interface{}) {
 
   inst := px.GetInstance(seq)
@@ -384,12 +403,9 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
         px.fdHearFrom(i)
       }
       
-      if px.view > view {
+      if px.view > view { //need something more here?
         px.Dprintf("***[%v][view=%v] aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
-        
-        //start a prober for the new view?
-        go px.prober(px.view, seq)
-        
+
         return
       }
       
@@ -429,7 +445,9 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     }
     
     if inst.State != STATE_DECIDED {
-      //px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+      if px.me == 3 {
+        px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+      }
     } else {
       px.Dprintf("***[%v][view=%v] done proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
     }
@@ -475,6 +493,20 @@ func (px *Paxos) prober(view int, seq int) {
           inst.State = STATE_DECIDED
           inst.DecidedVal = probeReply.DecidedVal
           inst.mu.Unlock()
+          
+          for i:=0; i<px.numPeers && !px.dead; i++ {
+            decidedArgs := DecidedArgs{}
+            decidedArgs.Seq = seq
+            decidedArgs.V = probeReply.DecidedVal
+            decidedArgs.Me = px.me
+            decidedArgs.DoneVal = px.doneVals[px.me]
+            decidedReply := DecidedReply{}
+            if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
+              px.fdHearFrom(i)
+              px.MergeDoneVals(decidedReply.DoneVal, i)
+            }
+          }
+          
           return
         }
       }      
@@ -528,7 +560,11 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
-  //px.Dprintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+  inst := px.GetInstance(args.Seq)
+
+  if args.Me == 3 {
+    px.Dprintf("***[%v][view=%v] %v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.State, args.View, args.Seq, valStr(args.V), args.Me)
+  }
 
   if args.Seq < px.Min() {
     return nil
@@ -536,7 +572,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 
   px.fdHearFrom(args.Me)
 
-  inst := px.GetInstance(args.Seq)
+  //inst := px.GetInstance(args.Seq)
 
   px.mu.Lock()
   if args.View > px.view {
@@ -643,11 +679,14 @@ func (px *Paxos) Start(seq int, v interface{}) int {
   oldV, ok := px.seen[seq]
   if ok {
     v = oldV
+    px.mu.Unlock()
+    return leader
   } else {
     px.seen[seq] = v
   }
   px.mu.Unlock()
   
+  /*
   if leader == px.me {
     go px.proposer(view, seq, v)
   } else {
@@ -655,6 +694,9 @@ func (px *Paxos) Start(seq int, v interface{}) int {
 //need to probe for decided vals
     go px.prober(view, seq)
   }
+  */
+  
+  go px.driver(seq, v)
   
   return leader
 }
@@ -799,7 +841,6 @@ func (px *Paxos) fdStart() {
     if target == fdPrevTarget {
       failed = (target != px.me) && (prevLastPing == px.fdLastPing)
       if failed {
-        //px.Dprintf("***[%v][view=%v] failure! of %v. px.timeout=%v, prevLastPing=%v, px.fdLastPing=%v\n", px.me, view, target, px.timeout, prevLastPing, px.fdLastPing)
       }
     }
     fdPrevTarget = target
@@ -808,6 +849,7 @@ func (px *Paxos) fdStart() {
     
     if failed {
       if view > px.fdInstall {
+        px.Dprintf("***[%v][view=%v] failure! of %v. px.timeout=%v, prevLastPing=%v, px.fdLastPing=%v\n", px.me, view, target, px.timeout, prevLastPing, px.fdLastPing)
         px.fdOnFail(view)
         px.fdInstall = view
       }
