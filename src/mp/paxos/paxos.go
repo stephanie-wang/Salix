@@ -31,9 +31,9 @@ import "math/rand"
 import "math"
 import "time"
 
-const Debug=0
+var Debug int = 0
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
+func Dprintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
     log.Printf(format, a...)
   }
@@ -73,6 +73,9 @@ type Paxos struct {
   //failure detection
   fdMu sync.Mutex
   fdLastPing time.Time
+  fdInstall int
+  timeout int
+  aimd bool
 }
 
 const (
@@ -87,6 +90,10 @@ type PaxosInstance struct {
   View_a int
   V_a interface{}
   DecidedVal interface{}
+  
+  //duplicate thread detection
+  proberView int
+  proposerView int
 }
 
 func MakeInstance() *PaxosInstance {
@@ -95,6 +102,9 @@ func MakeInstance() *PaxosInstance {
   inst.State = STATE_UNKNOWN
   inst.View_a = 0
   inst.V_a = nil
+  
+  inst.proberView = -1
+  inst.proposerView = -1
   
   return inst
 }
@@ -108,6 +118,7 @@ type PrepareArgs struct {
 type PrepareReply struct {
   Ok bool //true=ok, false=reject
   Accepted map[int]PaxosInstance  //includes decided
+  View int
 }
 
 type AcceptArgs struct {
@@ -146,6 +157,13 @@ type ProbeReply struct {
   DecidedVal interface{}
   
   DoneVal int
+}
+
+func (px *Paxos) Dprintf(format string, a ...interface{}) (n int, err error) {
+  if Debug > 0 {
+    log.Printf(format, a...)
+  }
+  return
 }
 
 // returns px.instances[seq], creating it if necessary
@@ -199,7 +217,7 @@ func (px *Paxos) lowestUndecided() int {
   px.mu.Lock()
   //then search for lowest undecided
   lowest := math.MaxInt32
-  for slot,inst := range px.instances {
+  for slot, inst := range px.instances {
     inst.mu.Lock()
     if inst.State != STATE_DECIDED && lowest < slot {
       lowest = slot
@@ -207,17 +225,19 @@ func (px *Paxos) lowestUndecided() int {
     inst.mu.Unlock()
   }
   px.mu.Unlock()
+
   return lowest
 }
 
 //installs the view
 func (px *Paxos) preparer(view int) {
-  DPrintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+  px.Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+
 
   for !px.dead {
     
-    if px.view > view {
-      DPrintf("***[%v][view=%v] exit-early preparer(view=%v)\n", px.me, px.view, view)
+    if px.view >= view {
+      px.Dprintf("***[%v][view=%v] exit-early preparer(view=%v)\n", px.me, px.view, view)
       return
     }
     
@@ -230,6 +250,8 @@ func (px *Paxos) preparer(view int) {
     replies := make([]PrepareReply, 0)
     
     for i:=0; i<px.numPeers && !px.dead; i++ {
+    
+    
       prepareArgs := PrepareArgs{}
       prepareArgs.View = view;
       prepareArgs.LowestUndecided = lowestUndecided
@@ -244,8 +266,16 @@ func (px *Paxos) preparer(view int) {
         if prepareReply.Ok {
           numPrepareOks = numPrepareOks + 1
           replies = append(replies, prepareReply)
-        } else {
-          //implies my view is too small
+        } else if prepareReply.View > px.view {
+          //pre-empted. give the other guy more time to finish
+          
+          if px.aimd {
+            px.timeout *= 2 //failure
+            if px.timeout > 10000 {
+              px.timeout = 10000
+            }
+          }
+          
           return;
         }
       }
@@ -256,12 +286,19 @@ func (px *Paxos) preparer(view int) {
       }
     }
     
-    DPrintf("***[%v][view=%v] got-majority preparer(view=%v)\n", px.me, px.view, view)
-    
     if numPrepareOks >= px.majority {
+      px.Dprintf("***[%v][view=%v] got-majority preparer(view=%v)\n", px.me, px.view, view)
+    
       px.mu.Lock()
       
       px.view = view
+        
+//      if px.aimd {
+//        px.timeout -= 1 //success
+//        if px.timeout < 1 {
+//          px.timeout = 1
+//        }
+//      }
       
       for _, reply := range replies {
         if reply.Accepted != nil {
@@ -301,7 +338,7 @@ func (px *Paxos) preparer(view int) {
       
       px.mu.Unlock()  //move this lock up?
       
-      DPrintf("***[%v][view=%v] done preparer(view=%v)\n", px.me, px.view, view)
+      px.Dprintf("***[%v][view=%v] done preparer(view=%v)\n", px.me, px.view, view)
       return
     }
   }
@@ -309,11 +346,17 @@ func (px *Paxos) preparer(view int) {
 
 func (px *Paxos) proposer(view int, seq int, v interface{}) {
 
-  DPrintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
-
   inst := px.GetInstance(seq)
-  
+
+  if view <= inst.proposerView {
+    return
+  }
+  inst.proposerView = view
+
+  Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+
   for inst.State != STATE_DECIDED && !px.dead {    
+  
     v_prime := v;
     inst.mu.Lock()
     if inst.State == STATE_KNOWN {
@@ -326,6 +369,7 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     numAcceptRejects := 0
     
     for i:=0; i<px.numPeers && !px.dead; i++ {
+    
       acceptArgs := AcceptArgs{}
       acceptArgs.Seq = seq
       acceptArgs.View = view
@@ -340,10 +384,16 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
         px.fdHearFrom(i)
       }
       
-      if acceptReply.View > view {
-        px.view = acceptReply.View
+      if px.view > view {
+        px.Dprintf("***[%v][view=%v] aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
         return
       }
+      
+//      if acceptReply.View > view {
+//        px.view = acceptReply.View
+//        px.Dprintf("***[%v][view=%v] aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+//        return
+//      }
       
       if acceptReply.Ok {
         numAcceptOks = numAcceptOks + 1          
@@ -373,18 +423,29 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
         }
       }
     }
+    
+    if inst.State != STATE_DECIDED {
+      //px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+    }
   }
 }
 
 func (px *Paxos) prober(view int, seq int) {
 
-  DPrintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
-
   inst := px.GetInstance(seq)
+  
+  if view <= inst.proberView {
+    return
+  }
+  inst.proberView = view
+
+  px.Dprintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+
+  
   
   for inst.State != STATE_DECIDED && !px.dead {        
     if px.view > view {
-      DPrintf("***[%v][view=%v] exit-early prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+      px.Dprintf("***[%v][view=%v] exit-early prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
       return
     }
   
@@ -395,11 +456,14 @@ func (px *Paxos) prober(view int, seq int) {
       probeArgs.DoneVal = px.doneVals[px.me]
       probeReply := ProbeReply{}
       
+      time.Sleep(1 * time.Millisecond)  //?
+      
       if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {          
+      
         px.MergeDoneVals(probeReply.DoneVal, i)
         
         if probeReply.Decided {
-          DPrintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, valStr(probeReply.DecidedVal), view, seq)
+          px.Dprintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, valStr(probeReply.DecidedVal), view, seq)
           inst.mu.Lock()
           inst.State = STATE_DECIDED
           inst.DecidedVal = probeReply.DecidedVal
@@ -412,7 +476,7 @@ func (px *Paxos) prober(view int, seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  DPrintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  //px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
 
   px.fdHearFrom(args.Me)
 
@@ -424,7 +488,10 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 */
   
   if args.View >= px.view {
-    px.view = args.View
+    if args.Me != px.me {
+      px.view = args.View
+    }
+    
     reply.Accepted = make(map[int]PaxosInstance)   //implicitly contains the N_a and V_a
     for slot,inst := range px.instances {
       inst.mu.Lock()
@@ -434,15 +501,27 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
       inst.mu.Unlock()
     }
     reply.Ok = true
+    
+    
+  if px.aimd {
+    px.timeout -= 1 //success
+    if px.timeout < 20 {
+      px.timeout = 20
+    }
+  }
+
+    
   } else {
     reply.Ok = false;
   }
+  reply.View = px.view
+  
   
   return nil;
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
-  DPrintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+  //px.Dprintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
 
   if args.Seq < px.Min() {
     return nil
@@ -476,26 +555,26 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 }
 
 func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
-  DPrintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  px.Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
 
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
 
-//DPrintf("***[%v][view=%v] 1 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+//px.Dprintf("***[%v][view=%v] 1 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
 
   if args.Seq < px.Min() {
     return nil
   }
   
-//DPrintf("***[%v][view=%v] 2 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+//px.Dprintf("***[%v][view=%v] 2 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   px.fdHearFrom(args.Me)
   
-//DPrintf("***[%v][view=%v] 3 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+//px.Dprintf("***[%v][view=%v] 3 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   inst := px.GetInstance(args.Seq)
 
-//DPrintf("***[%v][view=%v] 4 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+//px.Dprintf("***[%v][view=%v] 4 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
 
   //IMPORTANT: DO NOT CHANGE v_a!!! set DecidedVal instead  
   inst.mu.Lock()
@@ -503,19 +582,19 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
   inst.DecidedVal = args.V
   inst.mu.Unlock()
   
-DPrintf("***[%v][view=%v] 5 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  //px.Dprintf("***[%v][view=%v] 5 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   return nil
 }
 
 func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
-  DPrintf("***[%v][view=%v] onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+  //px.Dprintf("***[%v][view=%v] onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
 
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
 
   if args.Seq < px.Min() {
-    DPrintf("***[%v][view=%v] nil onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    //px.Dprintf("***[%v][view=%v] nil onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
     return nil
   }
   
@@ -523,7 +602,7 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
 
   inst.mu.Lock()
   if inst.State == STATE_DECIDED {
-    DPrintf("***[%v][view=%v] decided! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    //px.Dprintf("***[%v][view=%v] decided! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
     reply.Decided = true
     reply.DecidedVal = inst.DecidedVal
   }
@@ -544,7 +623,7 @@ func (px *Paxos) Start(seq int, v interface{}) int {
   view := px.view
   leader := px.leader(view)
 
-  DPrintf("***[%v][view=%v] Start(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
+  //px.Dprintf("***[%v][view=%v] Start(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
 
   px.mu.Lock()
   if seq > px.max {
@@ -703,24 +782,28 @@ func (px *Paxos) fdStart() {
     //timeout = 2 milliseconds works for TestBasic
     //use over 50 milliseconds for TestRPCCount
       //TODO: add more waits between probes/etc.
-    time.Sleep(10 * time.Millisecond)
+    time.Sleep(time.Duration(px.timeout) * time.Millisecond)
     
     failed := false
+    view := px.view
     
     px.fdMu.Lock()
-    target := px.leader(px.view)
+    target := px.leader(view)
     if target == fdPrevTarget {
       failed = (target != px.me) && (prevLastPing == px.fdLastPing)
       if failed {
-        DPrintf("***[%v][view=%v] failure! of %v. prevLastPing=%v, px.fdLastPing=%v\n", px.me, px.view, target, prevLastPing, px.fdLastPing)
+        px.Dprintf("***[%v][view=%v] failure! of %v. px.timeout=%v, prevLastPing=%v, px.fdLastPing=%v\n", px.me, view, target, px.timeout, prevLastPing, px.fdLastPing)
       }
     }
-    fdPrevTarget = px.leader(px.view)
+    fdPrevTarget = target
     prevLastPing = px.fdLastPing
     px.fdMu.Unlock()
     
     if failed {
-      px.fdOnFail()
+      if view > px.fdInstall {
+        px.fdOnFail(view)
+        px.fdInstall = view
+      }
     }
   }
 }
@@ -734,12 +817,13 @@ func (px *Paxos) fdHearFrom(host int) {
   }
 }
 
-func (px *Paxos) fdOnFail() {
-  view := px.view
-  for px.leader(view) != px.me {
-    view += 1
+func (px *Paxos) fdOnFail(view int) {
+  if px.view == view {
+    for px.leader(view) != px.me {
+      view += 1
+    }
+    go px.preparer(view)
   }
-  go px.preparer(view)
 }
 
 //
@@ -764,6 +848,9 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   }
   px.seen = make(map[int]interface{})
   px.fdLastPing = time.Now()
+  px.fdInstall = -1
+  px.timeout = 10
+  px.aimd = false
 
   if rpcs != nil {
     // caller will create socket &c

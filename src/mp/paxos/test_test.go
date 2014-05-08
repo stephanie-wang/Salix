@@ -16,6 +16,9 @@ import "os"
 import "time"
 import "fmt"
 import "math/rand"
+import "log"
+
+var PrintNdecided int = 0
 
 func port(tag string, host int) string {
   s := "/var/tmp/824-"
@@ -41,8 +44,16 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
         }
         count++
         v = v1
+      } else {
+        if PrintNdecided > 0 {
+          log.Printf("***[t] ndecided(seq=%v) not decided: %v\n", seq, i)
+        }
       }
     }
+  }
+  
+  if PrintNdecided > 0 {
+    log.Printf("***[t] ndecided(seq=%v) = %v\n", seq, count)
   }
   
   return count
@@ -710,6 +721,11 @@ func TestPartition(t *testing.T) {
 
   seq := 0
 
+  //PrintNdecided = 1
+  Debug = 1
+  
+  //time.Sleep(10000*time.Millisecond)
+
   fmt.Printf("Test: No decision if partitioned ...\n")
 
   part(t, tag, npaxos, []int{0,2}, []int{1,3}, []int{4})
@@ -718,13 +734,20 @@ func TestPartition(t *testing.T) {
   
   fmt.Printf("  ... Passed 12\n")
 
+  return
+
   fmt.Printf("Test: Decision in majority partition ...\n")
 
   part(t, tag, npaxos, []int{0}, []int{1,2,3}, []int{4})
   time.Sleep(2 * time.Second)
+  
+
+  
   waitmajority(t, pxa, seq)
 
   fmt.Printf("  ... Passed 13\n")
+
+return
 
   fmt.Printf("Test: All agree after full heal ...\n")
 
@@ -738,7 +761,13 @@ func TestPartition(t *testing.T) {
 
   fmt.Printf("Test: One peer switches partitions ...\n")
 
-  for iters := 0; iters < 20; iters++ {
+  fmt.Println("-----------------------------------------")
+  Debug = 1
+  PrintNdecided = 1
+  //DPrintf("kobe")
+
+  //20
+  for iters := 0; iters < 1; iters++ {
     seq++
 
     part(t, tag, npaxos, []int{0,1,2}, []int{3,4}, []int{})
@@ -749,9 +778,13 @@ func TestPartition(t *testing.T) {
       t.Fatalf("too many decided")
     }
     
+    fmt.Println("*******************************************")
+    
     part(t, tag, npaxos, []int{0,1}, []int{2,3,4}, []int{})
     waitn(t, pxa, seq, npaxos)
   }
+  
+return
 
   fmt.Printf("  ... Passed 15\n")
 
