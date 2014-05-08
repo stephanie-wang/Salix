@@ -63,6 +63,7 @@ func call(srv string, rpcname string,
 //
 func key2shard(key string) int {
   // TODO: think hard about this guy...current mapping won't work for files 
+  // TODO: make sure that a lock file gets mapped to the same shard as the file it locks
   shard := 0
   if len(key) > 0 {
     shard = int(key[0])

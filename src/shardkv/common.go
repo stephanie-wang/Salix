@@ -1,4 +1,5 @@
 package shardkv
+
 import "shardmaster"
 import "hash/fnv"
 import "crypto/rand"
@@ -51,6 +52,11 @@ type FileArgs struct {
   DoHash bool // for write only
 }
 
+type Filepath struct {
+  local string
+  base string
+}
+
 //type WriteArgs struct {
 //  File string
 //  Value string
@@ -90,9 +96,20 @@ type ReconfigArgs struct {
 type ReshardArgs struct {
   Num int // config number
   ShardNum int
-  // TODO: shard should map of filename to file?
-  //Shard map[string]string
+  Shard []string        // list of files in the shard
+  ShardHolders []string // list of servers holding this shard
   Seen map[int64]*Reply
+}
+
+type ReshardReply struct {
+  Err Err
+  Shard []string // list of missing files for this shard
+}
+
+type RequestFilesArgs struct {
+  Address string
+  Num int // config number
+  Files []string
 }
 
 func hash(s string) uint32 {
