@@ -442,6 +442,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     //  defer px.mu.Unlock()
     //}
     
+    px.mu.Lock()
     for slot,inst := range px.instances {
       inst.mu.Lock()
       if slot >= args.LowestUndecided && inst.Accepted {
@@ -449,6 +450,8 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
       }
       inst.mu.Unlock()
     }
+    px.mu.Unlock()
+    
     reply.Ok = true
   } else {
     reply.Ok = false;
@@ -465,7 +468,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   
   px.fdHearFrom(args.Me)
   
-  inst := px.GetInstanceNoLock(args.Seq)
+  inst := px.GetInstance(args.Seq)
   
   //if args.Me != px.me {
   //  px.mu.Lock()
