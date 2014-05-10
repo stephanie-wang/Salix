@@ -1,25 +1,17 @@
 package shardmaster
 
-import "fmt"
+import "bufio"
+import "encoding/json"
+import "log"
 import "os"
 import "strconv"
-import "strings"
 
-// writes the given string to the file
-func (sm *ShardMaster) writeConfig(config Config){
-	f, err := os.OpenFile(sm.configFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
-
-	if err != nil  {
-		fmt.Print(err)
-		return
-	}
-
-	defer f.Close()
-
-	_, err = f.WriteString(sm.encodeConfig(config))
-	if err != nil {
-		fmt.Println(err)
-	}
+// JSON marshaling does not support map keys that are not strings
+// so we create a string version that can be marshaled
+type JSONConfig struct {
+  Num int
+  Shards [NShards]int64
+  Groups map[string][]string
 }
 
 // clears the log files by first deleting them (if they exist)
@@ -30,97 +22,64 @@ func (sm *ShardMaster) clearFiles(){
 	f, err := os.OpenFile(sm.configFile, os.O_WRONLY|os.O_CREATE, 0666)
 
 	if err != nil {
-		fmt.Print(err)
+		log.Fatal(err)
 		return
 	}
 
 	f.Close()
 }
 
-
-// makes a configuration by reading the config file and decoding the configs
-// adds them to the shardmaster's configuration
-func (sm *ShardMaster) makeConfig() {
+// writes the given config at the end of configFile in JSON form
+func (sm *ShardMaster) writeConfig(config Config) {
+	toWrite := JSONConfig{Num: config.Num, Shards: config.Shards}
+	newGroups := make(map[string][]string)
+	for gid, vals := range config.Groups {
+		newGroups[strconv.FormatInt(gid, 10)] = vals
+	}
+	toWrite.Groups = newGroups
+	b, err := json.Marshal(toWrite)
+	if err != nil {
+		log.Fatal(err)
+	}
+	f, err2 := os.OpenFile(sm.configFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
+	if err2 != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	_, err = f.Write(b)
+	_, err = f.WriteString("\n")
 }
 
-// encodes a given config to string form
-// the form used is $<config num>;<comma-separated group num>;
-// <comma-separated servers by group>|*;<comma-separated shard num>$\n
-// example:
-// "$2;1,2,3;a,b,c|d,e,f|g,h,i;1,1,2,2,2,3,3,3,1,1$\n""
-func (sm *ShardMaster) encodeConfig(config Config) string {
-	configString := "$"+strconv.Itoa(config.Num)
-
-	groups := make([]string, len(config.Groups))
-	servers := make([]string, len(config.Groups))
-
-	i := 0
-	for grp, srvs := range config.Groups {
-		groups[i] = strconv.FormatInt(grp, 10)
-		servers[i] = strings.Join(srvs, ",")
-		i++
+// makes the sm.configs by reading from configFile
+func (sm *ShardMaster) makeConfig(){
+	f, err := os.OpenFile(sm.configFile, os.O_RDONLY, 0666)
+	if os.IsNotExist(err){
+		return
 	}
+	defer f.Close()
 
-	groupString := strings.Join(groups, ",")
-	serverString := strings.Join(servers, "|")
-
-	temp := make([]string, len(config.Shards))
-	for i, shard := range config.Shards{
-		temp[i] = strconv.FormatInt(shard, 10)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var config JSONConfig
+		err := json.Unmarshal(scanner.Bytes(), &config)
+		if err != nil {
+			return
+		}
+		sm.addToConfigs(config)
 	}
-
-	shardString := strings.Join(temp, ",")
-
-	total := []string{configString, groupString, serverString, shardString, "$\n"}
-
-	return strings.Join(total, ";")
 }
 
-// decodes a configuraiton from string from
-// returns the Configuration and true, if it was successfully decoded
-// or returns an empty Configuraiton and false if there was a problem in decoding
-// this will happen if the machine goes down before it's done writing the config to disk
-func (sm *ShardMaster) decodeConfig(text string) (Config, bool) {
-	if strings.Count(text, "$") != 2 {
-		return Config{}, false
-	}
-	
-	text = text[1:len(text)-3]
-	comp := strings.Split(text, ";")
-	
-	if len(comp) != 4 {
-		return Config{}, false
+// adds the given JSONConfig to the end of sm.configs by recreating the Config
+// and appending it to the end of sm.Configs
+func (sm *ShardMaster) addToConfigs(json JSONConfig){
+	var config Config = Config{Num: json.Num, Shards: json.Shards}
+	grps := make(map[int64][]string)
+
+	for grpString, vals := range json.Groups {
+		gid, _ := strconv.ParseInt(grpString, 10, 64)
+		grps[gid] = vals
 	}
 
-	num, _ := strconv.ParseInt(comp[0], 10, 0)
-	return Config{Num: int(num), Groups: sm.parseGroups(comp[1], comp[2]), Shards: sm.parseShards(comp[3])}, true
-}
-
-// makes a map of the groups and the corresponding servers given a string
-// that represents the group id's (comma separated), and a string that reprsentes server id's
-// per group (comma separated by group, separated by a vertical line between groups)
-func (sm *ShardMaster) parseGroups(groupString string, serverString string) map[int64][]string {
-	out := make(map[int64][]string)
-	groups := strings.Split(groupString, ",")
-	servers := strings.Split(serverString, "|")
-
-	for i, group := range groups {
-		serverList := strings.Split(servers[i], ",")
-		gid, _ := strconv.ParseInt(group, 10, 64)
-		out[gid] = serverList
-	}
-	return out
-}
-
-// makes a list of the shards given a comma-separated string that represents these shards
-func (sm *ShardMaster) parseShards(text string) [NShards]int64{
-	shards := strings.Split(text, ",")
-	var out [NShards]int64
-
-	for i, shard := range shards {
-		val, _ := strconv.ParseInt(shard, 10, 64)
-		out[i] = val
-	}
-
-	return out
+	config.Groups = grps
+	sm.configs = append(sm.configs, config)
 }

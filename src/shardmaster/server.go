@@ -21,6 +21,7 @@ type ShardMaster struct {
   dead bool // for testing
   unreliable bool // for testing
   px *paxos.Paxos
+  failed bool // for testing
 
   configs []Config // indexed by config num
 
@@ -32,8 +33,7 @@ type ShardMaster struct {
 
   configFile string // the filename that stores all the confits on disk
   scoreFile string // the filename that stores the score information (and latest heard) on disk
-
-  do map[string]func(Op)
+  fail bool
 }
 
 
@@ -49,23 +49,22 @@ type Op struct {
   Num int // for QUERY
 }
 
-func (sm *ShardMaster) writeToFile(){
-  fmt.Println("WRITING")
-  f, err := os.OpenFile("trial", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
-  defer f.Close()
+// func (sm *ShardMaster) writeToFile(){
+//   f, err := os.OpenFile("trial", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
+//   defer f.Close()
 
-  if err != nil && os.IsNotExist(err) {
-    f, _ = os.Create("trial")
-    defer f.Close()
-    fmt.Print("ERROR ", err)
-    fmt.Println(os.IsNotExist(err))
-  } else {
-    _, err2 := f.WriteString("hello world!")
-    if err2 != nil {
-      fmt.Print("ERROR2", err)
-    }
-  }
-}
+//   if err != nil && os.IsNotExist(err) {
+//     f, _ = os.Create("trial")
+//     defer f.Close()
+//     fmt.Print("ERROR ", err)
+//     fmt.Println(os.IsNotExist(err))
+//   } else {
+//     _, err2 := f.WriteString("hello world!")
+//     if err2 != nil {
+//       fmt.Print("ERROR2", err)
+//     }
+//   }
+// }
 
 // updates sm.configs by applying outstanding Ops until
 // it is at a point where the queried config # can be determined
@@ -92,60 +91,6 @@ func (sm *ShardMaster) update(seq int, queried int) {
   }
 
   sm.px.Done(sm.myDone)
-}
-
-// apply the NOP op in the log
-func (sm *ShardMaster) doNOP(op Op) {
-  return
-}
-
-// apply the QUERY op in the log
-func (sm *ShardMaster) doQUERY(op Op){
-  return
-}
-  
-// apply the MOVE op in the log
-func (sm *ShardMaster) doMOVE(op Op){
-  current := sm.configs[len(sm.configs)-1]
-  
-  newGroups := make(map[int64][]string)
-  
-  for gid, servers := range current.Groups {
-    newGroups[gid] = servers
-  }
-  
-  var newShards [NShards]int64
-  for i, gid := range current.Shards {
-      newShards[i] = gid
-  }
-  
-  newShards[op.Shard] = op.GID
-  newConfig := Config{Num: current.Num+1, Shards: newShards, Groups: newGroups}
-  sm.writeConfig(newConfig)
-  sm.configs = append(sm.configs, newConfig)
-}
-
-func (sm *ShardMaster) doJOIN(op Op){
-}
-
-
-func (sm *ShardMaster) doLEAVE(op Op){
-}
-
-func (sm *ShardMaster) doPOPULARITY(op Op){
-  // if current.Num != op.Config.Num {
-  //   return
-  // }
-  // seq, ok := sm.latestHeard[op.GID]
-
-  // // only save score if we haven't heard from group before
-  // // or if sequence # from this group is higher than before
-  // if !ok || op.Seq > seq {
-  //   sm.latestHeard[op.GID] = op.Config
-  //   for shard, score := range op.Scores {
-  //     sm.scores[shard] = score
-  //   }
-  // }
 }
 
 
@@ -182,10 +127,8 @@ func (sm *ShardMaster) execute(op Op) {
       // none of the score reports are valid w/new config
       if created {
         sm.latestHeard = make(map[int64]int)  
-      }
-      
+      } 
     }
-
   return
   }
 
@@ -220,7 +163,7 @@ func (sm *ShardMaster) execute(op Op) {
 
 // creates a new configuration with the popularity scores in sm.scores
 // optimizes to make every group have partitions w/an equal sum of popularities
-// appends the new config at the end of sm.configs
+// writes the new config to disk and then appends it at the end of sm.configs
 func (sm *ShardMaster) createNewConfig(groups map[int64][]string) bool {
   last := sm.configs[len(sm.configs)-1]
   
@@ -236,7 +179,7 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) bool {
   }
 
   newConfig := Config{Num: last.Num+1, Shards: newShards, Groups: groups}
-  // TODO: write to file here
+
   sm.writeConfig(newConfig)
   sm.configs = append(sm.configs, newConfig)
   return true
@@ -406,6 +349,20 @@ func (sm *ShardMaster) wait(seq int, isNOP bool) interface{} {
   return nil
 }
 
+// simulate this machine failing
+func (sm *ShardMaster) Fail(){
+  sm.fail = true
+}
+
+// simulate a revival of this machine after it has failed
+// the memory contents of this machine should be erased
+func (sm *ShardMaster) Revive(){
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+  sm.fail = false
+  sm.restartMemory()
+}
+
 // please don't change this function.
 func (sm *ShardMaster) Kill() {
   sm.dead = true
@@ -414,14 +371,8 @@ func (sm *ShardMaster) Kill() {
 }
 
 // Creates the attributes that this machine has in its memory.
-// This can be called either by StartServer() or after a machine
-// recovers from a failure.
-// If it's called by StartServer(), then atStart should be true.
-// This ensures that the log files are cleared and start out blank.
-// If it's called after a failure recovery, then atStart should be false.
-// this ensures the log files remain intact and simulates a machine losing
-// its memory but not its disk contents.
-func (sm *ShardMaster) createAttributes(atStart bool) {
+// This should be called by StartServer()
+func (sm *ShardMaster) startMemory() {
   sm.configs = make([]Config, 1)
   sm.configs[0].Groups = map[int64][]string{}
 
@@ -435,20 +386,16 @@ func (sm *ShardMaster) createAttributes(atStart bool) {
     sm.scores[i] = 1
   }
 
-  sm.do = make(map[string]func(Op))
-  sm.do["NOP"] = sm.doNOP
-  sm.do["QUERY"] = sm.doQUERY
-  sm.do["MOVE"] = sm.doMOVE
-  sm.do["JOIN"] = sm.doJOIN
-  sm.do["LEAVE"] = sm.doLEAVE
-  sm.do["POPULARITY"] = sm.doPOPULARITY
-
   sm.configFile = "sm-config-"+strconv.Itoa(sm.me)
   sm.scoreFile = "sm-score-"+strconv.Itoa(sm.me)
+}
 
-  if atStart {
-    sm.clearFiles()  
-  } 
+// Restarts the memory by revererting back to the original memory 
+// state, and then adding in the rest of the contents by looking at
+// the files on disk.
+func (sm *ShardMaster) restartMemory(){
+  sm.startMemory()
+  sm.makeConfig()
 }
 
 //
@@ -462,9 +409,9 @@ func StartServer(servers []string, me int) *ShardMaster {
 
   sm := new(ShardMaster)
   sm.me = me
-  sm.writeToFile()
 
-  sm.createAttributes(true)
+  sm.startMemory()
+  sm.clearFiles()
 
   rpcs := rpc.NewServer()
   rpcs.Register(sm)
@@ -484,6 +431,11 @@ func StartServer(servers []string, me int) *ShardMaster {
   go func() {
     for sm.dead == false {
       conn, err := sm.l.Accept()
+      // when a server has failed, we are not serving any connections
+      if sm.fail {
+        conn.Close()
+        continue
+      }
       if err == nil && sm.dead == false {
         if sm.unreliable && (rand.Int63() % 1000) < 100 {
           // discard the request.
