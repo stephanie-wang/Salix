@@ -1,11 +1,13 @@
 /*
+
 TODO: TestLots
 --- FAIL: TestLots (25.13 seconds)
         test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
         test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
         test_test.go:35: decided values do not match; seq=4 i=2 v=9 v1=5
-        
-//  cls;  ../../multitest.sh -run TestPartition 2>&1 | grep -v unexpected | grep -v connection | grep -v write
+
+cd ~/6.824/Salix/src/mp/paxos/        
+cls;  ../../multitest.sh -run TestLots 2>&1 | grep -v unexpected | grep -v connection | grep -v write
 */
 
 package paxos
@@ -113,7 +115,7 @@ func startByClient(server int, pxa[]*Paxos, seq int, v interface{}) {
       leader = pxa[leader].Start(seq, v)
       ok, _ := pxa[server].Status(seq)
       if ok {
-        fmt.Printf("*** [t] done startByClient(seq=%d)\n", seq)
+        //fmt.Printf("*** [t] done startByClient(seq=%d)\n", seq)
         break
       }
       time.Sleep(1 * time.Millisecond)
@@ -172,7 +174,7 @@ func noTestSpeed(t *testing.T) {
 func TestBasic(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-Debug = 1
+//Debug = 1
 
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -700,6 +702,8 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
 
 func TestPartition(t *testing.T) {
   //return//
+  
+  Debug = 1
 
   runtime.GOMAXPROCS(4)
 
@@ -763,7 +767,7 @@ func TestPartition(t *testing.T) {
 
   //DPrintf("kobe")
 
-  Debug = 1
+  Debug = 0
   PrintNdecided = 0
 
   for iters := 0; iters < 20; iters++ {
