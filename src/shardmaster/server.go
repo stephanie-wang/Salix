@@ -49,23 +49,6 @@ type Op struct {
   Num int // for QUERY
 }
 
-// func (sm *ShardMaster) writeToFile(){
-//   f, err := os.OpenFile("trial", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
-//   defer f.Close()
-
-//   if err != nil && os.IsNotExist(err) {
-//     f, _ = os.Create("trial")
-//     defer f.Close()
-//     fmt.Print("ERROR ", err)
-//     fmt.Println(os.IsNotExist(err))
-//   } else {
-//     _, err2 := f.WriteString("hello world!")
-//     if err2 != nil {
-//       fmt.Print("ERROR2", err)
-//     }
-//   }
-// }
-
 // updates sm.configs by applying outstanding Ops until
 // it is at a point where the queried config # can be determined
 // if queried is -1, then all updates until (and including) seq
