@@ -222,10 +222,10 @@ func (px *Paxos) preparer(view int) {
 func (px *Paxos) driver(seq int, v interface{}) {
 }
 
-func (px *Paxos) proposer(view int, seq int, v interface{}) {
+func (px *Paxos) proposer(seq int, v interface{}) {
 }
 
-func (px *Paxos) prober(view int, seq int) {
+func (px *Paxos) prober(seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
@@ -253,7 +253,22 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
 //
 
 func (px *Paxos) Start(seq int, v interface{}) int {
-  return -1
+  px.startMu.Lock()
+  defer px.startMu.Unlock()
+  
+  px.mu.Lock()
+  if seq > px.max {
+    px.max = seq
+  }
+  px.mu.Unlock()
+  
+  _, ok := px.started[seq]
+  if !ok {
+    px.started[seq] = true
+    go px.driver(seq, v)
+  }
+  
+  return px.leader(px.view)
 }
 
 func (px *Paxos) FreeMemory(keepAtLeast int) {
@@ -341,7 +356,23 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
-  return false, nil
+  px.mu.Lock()
+  inst, ok := px.instances[seq]
+  px.mu.Unlock()
+  
+  var retDecided bool = false
+  var retVal interface{} = nil
+  
+  if ok {
+    inst.mu.Lock()
+    if inst.Decided {
+      retDecided = true
+      retVal = inst.DecidedVal
+    }
+    inst.mu.Unlock()
+  }
+  
+  return retDecided, retVal
 }
 
 //
@@ -361,12 +392,50 @@ func (px *Paxos) Kill() {
 //
 
 func (px *Paxos) fdThread() {
+  fdPrevTarget := -1
+  fdInstalledView := -1
+  var prevLastPing time.Time
+  
+  for !px.dead {
+    time.Sleep(time.Duration(FAILURE_DETECTOR_TO) * time.Millisecond)
+    
+    failure := false
+    view := px.view
+    
+    px.fdMu.Lock()
+    target := px.leader(view)
+    if target == fdPrevTarget {
+      failure = (target != px.me) && (prevLastPing == px.fdLastPing)
+    }
+    fdPrevTarget = target
+    prevLastPing = px.fdLastPing
+    px.fdMu.Unlock()
+    
+    if failure {
+      if view > fdInstalledView {
+        px.fdOnFail(view)
+        fdInstalledView = view
+      }
+    }
+  }
 }
 
 func (px *Paxos) fdHearFrom(host int) {
+  px.fdMu.Lock()
+  defer px.fdMu.Unlock()
+  
+  if host == px.leader(px.view) {
+    px.fdLastPing = time.Now()
+  }
 }
 
 func (px *Paxos) fdOnFail(view int) {
+  if px.view == view {
+    for px.leader(view) != px.me {
+      view += 1
+    }
+    go px.preparer(view)
+  }
 }
 
 //

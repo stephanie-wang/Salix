@@ -855,8 +855,6 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   var retDecided bool = false
   var retVal interface{} = nil
   
-  //fucked!!!
-  
   if ok {
     inst.mu.Lock()
     if inst.Decided {
