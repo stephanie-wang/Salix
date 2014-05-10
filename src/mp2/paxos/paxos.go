@@ -195,7 +195,7 @@ func (px *Paxos) MergeDoneVals(doneVal int, from int) {
 }
 
 func (px *Paxos) leader(view int) int {
-  return view % len(px.peers)
+  return view % px.numPeers
 }
 
 func (px *Paxos) lowestUndecided() int {
@@ -217,6 +217,87 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
+  for !px.dead {
+    if px.view >= view {
+      return
+    }
+
+    //send Prepare to all peers
+    var numPrepareOks int = 0
+    var numPrepareRejects int = 0
+    lowestUndecided := px.lowestUndecided()
+    replies := make([]PrepareReply, 0)
+    
+    for i:=0; i<px.numPeers && !px.dead; i++ {
+      prepareArgs := PrepareArgs{}
+      prepareArgs.View = view;
+      prepareArgs.LowestUndecided = lowestUndecided
+      prepareArgs.Me = px.me
+      prepareReply := PrepareReply{}
+      
+      if !px.Call2(px.peers[i], "Paxos.Prepare", prepareArgs, &prepareReply) {
+        //treat RPC failure as prepareReject
+        numPrepareRejects = numPrepareRejects + 1
+      } else {
+        px.fdHearFrom(i)
+        if prepareReply.Ok {
+          numPrepareOks = numPrepareOks + 1
+          replies = append(replies, prepareReply)
+        } else if prepareReply.View > px.view {
+          //someone else became leader
+          return;
+        }
+      }
+      
+      //abort early if enough oks or too many rejects/failures
+      if numPrepareOks >= px.majority || numPrepareRejects > px.numPeers - px.majority {
+        break
+      }
+    }
+    
+    if numPrepareOks >= px.majority {
+      px.mu.Lock()
+      
+      px.view = view
+      
+      for _, reply := range replies {
+        if reply.Accepted != nil {
+          for slot, recvd := range reply.Accepted {
+            inst := px.GetInstanceNoLock(slot)
+            inst.mu.Lock()
+            
+            if !inst.Decided {
+              if !inst.Accepted ||
+                   //recvd.Decided ||
+                   (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
+
+                //don't overwrite my decided value!
+                inst.Accepted = recvd.Accepted
+                inst.View_a = recvd.View_a
+                inst.V_a = recvd.V_a
+              }
+            }
+            
+            inst.mu.Unlock()
+          }
+        }
+      }
+      
+      //start each accepted instance that I didn't know about
+      for slot, inst := range px.instances {
+        inst.mu.Lock()        
+        if (inst.Accepted && !inst.Decided) {
+          go px.Start(slot, inst.V_a)
+          //do that in thread so I don't have to give up px.mu
+        }
+        inst.mu.Unlock()
+      }
+      
+      px.mu.Unlock()
+      
+      return
+    }
+  }
 }
 
 func (px *Paxos) driver(seq int, v interface{}) {
@@ -265,7 +346,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
     if px.view > view { //if proposal view is obsolete
       return
     }
-    
+
     if acceptReply.View > view {  //if other nodes have moved on
       px.view = acceptReply.View  //also move on
       return
@@ -588,6 +669,7 @@ func (px *Paxos) fdThread() {
     px.fdMu.Unlock()
     
     if failure {
+      //avoid calling fdOnFail multiple times for same view #
       if view > fdInstalledView {
         px.fdOnFail(view)
         fdInstalledView = view
@@ -609,6 +691,9 @@ func (px *Paxos) fdOnFail(view int) {
   if px.view == view {
     for px.leader(view) != px.me {
       view += 1
+    }
+    if px.view >= view { //if new view has been reached already
+      return             //avoid starting new thread
     }
     go px.preparer(view)
   }

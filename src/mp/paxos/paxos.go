@@ -586,6 +586,13 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     }
     reply.Ok = true
     
+    
+  if px.aimd {
+    px.timeout -= 1 //success
+    if px.timeout < 20 {
+      px.timeout = 20
+    }
+  }
 
     
   } else {
@@ -847,6 +854,8 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   
   var retDecided bool = false
   var retVal interface{} = nil
+  
+  //fucked!!!
   
   if ok {
     inst.mu.Lock()
