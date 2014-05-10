@@ -349,10 +349,10 @@ func (px *Paxos) preparer(view int) {
         }
       }
       
-      for _, slot in range := changed {
+      for _, slot := range changed {
         inst := px.GetInstanceNoLock(slot)
         inst.mu.Lock()
-        inst.View_a = view  //new view
+        //inst.View_a = view  //new view
         inst.mu.Unlock()
       }
         
@@ -379,7 +379,7 @@ func (px *Paxos) driver(seq int, v interface{}) {
     view := px.view
     leader := px.leader(view)
 
-    px.Dprintf("***[%v][view=%v] driver(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
+    //px.Dprintf("***[%v][view=%v] driver(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
     
     if leader == px.me {
       px.proposer(view, seq, v)
@@ -416,6 +416,7 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     if inst.Accepted {  //TODO: need decided here?
       v_prime = inst.V_a
     }
+    //x := inst.View_a
     inst.mu.Unlock()
     
     //send Accept to all peers
@@ -426,7 +427,7 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     
       acceptArgs := AcceptArgs{}
       acceptArgs.Seq = seq
-      acceptArgs.View = view
+      acceptArgs.View = view //x //view
       acceptArgs.V = v_prime
       acceptArgs.Me = px.me
       acceptReply := AcceptReply{}
@@ -549,7 +550,7 @@ func (px *Paxos) prober(view int, seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  //px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
 
   px.fdHearFrom(args.Me)
 
@@ -560,7 +561,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
   }
 */
   
-  if args.View >= px.view {
+  if args.View > px.view {
     if args.Me != px.me {
       px.view = args.View
     }
@@ -611,11 +612,27 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     px.Dprintf("***[%v][view=%v] %v %v inst.View_a=%v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, inst.View_a, args.View, args.Seq, valStr(args.V), args.Me)
   //}
   
+  if args.View >= px.view {
+    px.view = args.View
+    inst.View_a = args.View
+    inst.V_a = args.V
+    inst.Accepted = true
+    reply.Ok = true
+  } else {
+    reply.Ok = false
+  }
+  reply.View = px.view
+  
+/*
   if args.View > px.view {
     px.view = args.View
     reply.Ok = false
+  //} else if args.View < px.view {
+  //  reply.Ok = false
   } else {
-    if inst.View_a == args.View {   //TODO
+    if args.View >= inst.View_a{   //TODO
+      inst.View_a = args.View //not sure if this needed
+      
       inst.V_a = args.V
       inst.Accepted = true
       reply.Ok = true
@@ -624,6 +641,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     }
   }
   reply.View = px.view
+*/
   
   inst.mu.Unlock()
   px.mu.Unlock()
