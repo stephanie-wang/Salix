@@ -220,12 +220,114 @@ func (px *Paxos) preparer(view int) {
 }
 
 func (px *Paxos) driver(seq int, v interface{}) {
+  inst := px.GetInstance(seq)
+  
+  for !inst.Decided && !px.dead {   
+    view := px.view
+    leader := px.leader(view)
+    if leader == px.me {
+      px.propose(view, seq, v)
+    } else {
+      px.probe(view, seq)
+    }
+  }
 }
 
-func (px *Paxos) proposer(seq int, v interface{}) {
+func (px *Paxos) propose(view int, seq int, v interface{}) {
+  inst := px.GetInstance(seq)
+  
+  v_prime := v;
+  
+  inst.mu.Lock()
+  if inst.Accepted {
+    v_prime = inst.V_a
+  }
+  inst.mu.Unlock()
+  
+  //send Accept to all peers
+  numAcceptOks := 0
+  numAcceptRejects := 0
+  
+  for i:=0; i<px.numPeers && !px.dead; i++ {
+    acceptArgs := AcceptArgs{}
+    acceptArgs.Seq = seq
+    acceptArgs.View = view //view //x //view
+    acceptArgs.V = v_prime
+    acceptArgs.Me = px.me
+    acceptReply := AcceptReply{}
+    
+    if !px.Call2(px.peers[i], "Paxos.Accept", acceptArgs, &acceptReply) {          
+      acceptReply.Ok = false  //treat RPC failure as acceptReject
+    } else {
+      px.fdHearFrom(i)
+    }
+    
+    if px.view > view { //if proposal view is obsolete
+      return
+    }
+    
+    if acceptReply.View > view {  //if other nodes have moved on
+      px.view = acceptReply.View  //also move on
+      return
+    }
+    
+    if acceptReply.Ok {
+      numAcceptOks = numAcceptOks + 1          
+    } else {
+      numAcceptRejects = numAcceptRejects + 1
+    }
+    
+    //abort early if enough oks or too many rejects/failures
+    if numAcceptOks >= px.majority || numAcceptRejects > px.numPeers - px.majority{
+      break
+    }
+  }
+        
+  if numAcceptOks >= px.majority {
+    //send Decided to all peers
+    
+    for i:=0; i<px.numPeers && !px.dead; i++ {
+      decidedArgs := DecidedArgs{}
+      decidedArgs.Seq = seq
+      decidedArgs.V = v_prime
+      decidedArgs.Me = px.me
+      decidedArgs.DoneVal = px.doneVals[px.me]
+      decidedReply := DecidedReply{}
+      if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
+        px.fdHearFrom(i)
+        px.MergeDoneVals(decidedReply.DoneVal, i)
+      }
+    }
+  }
 }
 
-func (px *Paxos) prober(seq int) {
+func (px *Paxos) probe(view int, seq int) {
+  for i:=0; i<px.numPeers && !px.dead; i++ {
+    probeArgs := ProbeArgs{}
+    probeArgs.Seq = seq
+    probeArgs.Me = px.me
+    probeReply := ProbeReply{}
+    
+    if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {
+      
+      if probeReply.Decided {
+        for i:=0; i<px.numPeers && !px.dead; i++ {
+          decidedArgs := DecidedArgs{}
+          decidedArgs.Seq = seq
+          decidedArgs.V = probeReply.DecidedVal
+          decidedArgs.Me = px.me
+          decidedReply := DecidedReply{}
+          
+          if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
+            px.fdHearFrom(i)
+          }
+        }
+        
+        return
+      }
+    }      
+  }
+
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
@@ -294,6 +396,23 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 }
 
 func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+  px.MergeDoneVals(args.DoneVal, args.Me)
+  reply.DoneVal = px.doneVals[px.me]
+  
+  if args.Seq < px.Min() {
+    return nil
+  }
+  
+  px.fdHearFrom(args.Me)
+  
+  inst := px.GetInstance(args.Seq)
+  
+  //IMPORTANT: DO NOT CHANGE v_a!!! set DecidedVal instead  
+  inst.mu.Lock()
+  inst.Decided = true
+  inst.DecidedVal = args.V
+  inst.mu.Unlock()
+  
   return nil
 }
 
