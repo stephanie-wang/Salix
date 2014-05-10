@@ -174,7 +174,7 @@ func noTestSpeed(t *testing.T) {
 func TestBasic(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-Debug = 1
+//Debug = 1
 
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -240,7 +240,7 @@ Debug = 1
 func TestDeaf(t *testing.T) {
   //return//
 
-  Debug = 1
+  //Debug = 1
 
   runtime.GOMAXPROCS(4)
 
@@ -825,7 +825,7 @@ func TestPartition(t *testing.T) {
 func TestLots(t *testing.T) {
   //return//
 
-  Debug = 1
+  //Debug = 1
 
   runtime.GOMAXPROCS(4)
 
