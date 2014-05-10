@@ -72,6 +72,10 @@ type ShardKV struct {
   popularities map[int]*PopularityStatus
 
   root string
+
+  // map of config number -> paxos seq of corresponding reconfig op
+  reconfigs map[int]int
+  cleanedConfig int
 }
 
 
@@ -756,6 +760,34 @@ func (kv *ShardKV) kill() {
   kv.px.Kill()
 }
 
+func (kv *ShardKV) cleanTmp() {
+  /*
+  Try to clean up tmp files for the most recent reconfig
+  */
+  min := kv.px.Min()
+
+  if kv.cleanedConfig > kv.config.Num {
+    // we haven't reached the next config yet
+    return
+  }
+
+  for kv.cleanedConfig <= kv.config.Num {
+    if seq, ok := kv.reconfigs[kv.cleanedConfig]; ok && seq >= min {
+      // we have reached next config, but not all instances have applied it yet
+      return
+    }
+    // either:
+    //  - next config had no sequence in the log --> this instance is starting
+    //  at this config 
+    //  - next config is in log and all instances have applied 
+    // then it's okay to delete the tmp files for the previous config
+    tmpDir := kv.getTmpPathname(kv.cleanedConfig - 1)
+    os.Remove(tmpDir)
+    log.Printf("cleaned tmp files for config %d", kv.cleanedConfig - 1)
+    kv.cleanedConfig++
+  }
+}
+
 //
 // Start a shardkv server.
 // gid is the ID of the server's replica group.
@@ -783,6 +815,7 @@ func StartServer(gid int64, shardmasters []string,
   kv.seen = make(map[int]map[int64]*Reply)
   kv.shardConfigs = make(map[int]int)
   kv.popularities = make(map[int]*PopularityStatus)
+  kv.reconfigs = make(map[int]int)
 
   // TODO: consider chrooting to this
   kv.root = servers[me] + "-root"
@@ -837,6 +870,7 @@ func StartServer(gid int64, shardmasters []string,
     for kv.dead == false {
       kv.tick()
       //kv.popularityPing()
+      //kv.cleanTmp()
       time.Sleep(250 * time.Millisecond)
     }
   }()
