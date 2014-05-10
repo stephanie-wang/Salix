@@ -64,6 +64,8 @@ type Paxos struct {
   numPeers int
   majority int  //floor(numPeers/2) + 1
 
+  mu2 sync.RWMutex  //used to make sure no proposals during election?
+  
   view int
   instances map[int]*PaxosInstance  //Paxos instances
   max int // number returned by Max()  
@@ -310,6 +312,9 @@ func (px *Paxos) driver(seq int, v interface{}) {
   inst := px.GetInstance(seq)
   
   for !inst.Decided && !px.dead {   
+    px.mu2.RLock()
+    defer px.mu2.RUnlock()
+    
     view := px.view
     leader := px.leader(view)
     if leader == px.me {
@@ -321,6 +326,9 @@ func (px *Paxos) driver(seq int, v interface{}) {
 }
 
 func (px *Paxos) propose(view int, seq int, v interface{}) {
+  px.mu2.Lock()
+  defer px.mu2.Unlock()
+  
   inst := px.GetInstance(seq)
   
   v_prime := v;
