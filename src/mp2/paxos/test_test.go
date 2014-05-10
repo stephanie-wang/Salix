@@ -172,6 +172,8 @@ func noTestSpeed(t *testing.T) {
 }
 
 func TestBasic(t *testing.T) {
+  //t.Fatalf("crash!")
+
   runtime.GOMAXPROCS(4)
 
 //Debug = 1
