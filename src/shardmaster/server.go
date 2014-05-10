@@ -31,7 +31,7 @@ type ShardMaster struct {
   latestHeard map[int64]int // group id --> highest seq # for this current configuration
   // if the group has not sent a score for the current config, it will not be here
 
-  configFile string // the filename that stores all the confits on disk
+  configFile string // the filename that stores all the configs on disk
   scoreFile string // the filename that stores the score information (and latest heard) on disk
   fail bool
 }
@@ -92,10 +92,27 @@ func (sm *ShardMaster) execute(op Op) {
     // only save score if we haven't heard from group before
     // or if the sequence number from this group is higher than before
     if !ok || op.Seq > seq {
-      sm.latestHeard[op.GID] = op.ConfigNum
-      for shard, score := range op.Scores {
-        sm.scores[shard] = score
+      
+      // WAL means we must create copies of sm.scores
+      // and sm.latestHeard so that we can log them
+      // before we actually set them in our memory
+      var newScores [NShards]int
+      for shard, score := range sm.scores {
+        newScores[shard] = score
       }
+      for shard, score := range op.Scores {
+        newScores[shard] = score
+      }
+
+      newLatestHeard := make(map[int64]int)
+      for gid, val := range sm.latestHeard {
+        newLatestHeard[gid] = val
+      }
+      newLatestHeard[op.GID] = op.ConfigNum
+
+      sm.writeScores(newScores, newLatestHeard)
+      sm.scores = newScores
+      sm.latestHeard = newLatestHeard
     }
 
     // all groups have reported values for this config
@@ -105,12 +122,7 @@ func (sm *ShardMaster) execute(op Op) {
       for gid, servers := range current.Groups {
         newGroups[gid] = servers
       }
-      created := sm.createNewConfig(newGroups)
-
-      // none of the score reports are valid w/new config
-      if created {
-        sm.latestHeard = make(map[int64]int)  
-      } 
+      sm.createNewConfig(newGroups)
     }
   return
   }
@@ -123,13 +135,11 @@ func (sm *ShardMaster) execute(op Op) {
   if op.Type == "JOIN" {
     newGroups[op.GID] = op.Servers
     sm.createNewConfig(newGroups)    
-    sm.latestHeard = make(map[int64]int)  
   }
 
   if op.Type == "LEAVE" {
     delete(newGroups, op.GID)
     sm.createNewConfig(newGroups)
-    sm.latestHeard = make(map[int64]int)
   }
 
   if op.Type == "MOVE" {
@@ -147,7 +157,7 @@ func (sm *ShardMaster) execute(op Op) {
 // creates a new configuration with the popularity scores in sm.scores
 // optimizes to make every group have partitions w/an equal sum of popularities
 // writes the new config to disk and then appends it at the end of sm.configs
-func (sm *ShardMaster) createNewConfig(groups map[int64][]string) bool {
+func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
   last := sm.configs[len(sm.configs)-1]
   
   newGroups := make(map[int64]bool)
@@ -158,14 +168,19 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) bool {
   newShards := loadBalance(sm.scores, last.Shards, newGroups)
   
   if equals(last.Shards, newShards) && len(groups) == len(last.Groups) {
-    return false
+    return
   }
 
   newConfig := Config{Num: last.Num+1, Shards: newShards, Groups: groups}
 
+  // write the stuff to log
+  // do it BEFORE actually making changes to memory (WAL)
   sm.writeConfig(newConfig)
+  newLatestHeard := make(map[int64]int)
+  sm.writeScores(sm.scores, newLatestHeard)
+
   sm.configs = append(sm.configs, newConfig)
-  return true
+  sm.latestHeard = newLatestHeard
 }
 
 // RPC Move from client
@@ -342,8 +357,9 @@ func (sm *ShardMaster) Fail(){
 func (sm *ShardMaster) Revive(){
   sm.mu.Lock()
   defer sm.mu.Unlock()
-  sm.fail = false
   sm.restartMemory()
+  sm.fail = false
+  
 }
 
 // please don't change this function.
