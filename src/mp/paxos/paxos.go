@@ -329,7 +329,7 @@ func (px *Paxos) preparer(view int) {
             otherwise, copy his values
             */
             
-            if !inst.Decided {
+            if !inst.Decided {  //TODO do we need this
             
               if !inst.Accepted ||
                    //recvd.Decided ||
@@ -599,21 +599,23 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   //inst := px.GetInstance(args.Seq)
 
   px.mu.Lock()
+  inst.mu.Lock()
+  
   if args.View > px.view {
     px.view = args.View
     reply.Ok = false
-  } else if args.View == px.view {
-    inst.mu.Lock()
-    inst.View_a = args.View
-    inst.V_a = args.V
-    inst.Accepted = true
-    inst.mu.Unlock()
-    reply.Ok = true
   } else {
-    reply.Ok = false
+    if inst.View_a == args.View {   //TODO
+      inst.V_a = args.V
+      inst.Accepted = true
+      reply.Ok = true
+    } else {
+      reply.Ok = false
+    }
   }
   reply.View = px.view
   
+  inst.mu.Unlock()
   px.mu.Unlock()
   
   return nil;
