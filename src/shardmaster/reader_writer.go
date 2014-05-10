@@ -2,6 +2,7 @@ package shardmaster
 
 import "bufio"
 import "encoding/json"
+// import "fmt"
 import "log"
 import "os"
 import "strconv"
@@ -32,11 +33,21 @@ func (sm *ShardMaster) clearFiles(){
 	}
 	f.Close()
 
+	var scores [NShards]int
+	for i:=0; i<NShards; i++{
+		scores[i] = 1
+	}
+	
+	newHeard := make(map[string]int)
+	toWrite := JSONScore{Scores: scores, Heard: newHeard}
+	b, _ := json.Marshal(toWrite)
+
 	f, err = os.OpenFile(sm.scoreFile, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
+	_, err = f.WriteString(string(b) + "\n")
 	f.Close()
 }
 
@@ -80,7 +91,7 @@ func (sm *ShardMaster) writeScores(scores [NShards]int, heard map[int64]int){
 		log.Fatal(err2)
 	}
 	defer f.Close()
-	_, err = f.WriteString(string(b) + "\n")
+	_, err = f.WriteString(string(b))
 }
 
 // makes the sm.configs by reading from configFile
@@ -104,7 +115,7 @@ func (sm *ShardMaster) makeConfig(){
 
 // makes sm.scores and sm.latestHeard from the scoreFile
 func (sm *ShardMaster) makeScores() {
-	f, err := os.OpenFile(sm.configFile, os.O_RDONLY, 0666)
+	f, err := os.OpenFile(sm.scoreFile, os.O_RDONLY, 0666)
 	if os.IsNotExist(err){
 		return
 	}
@@ -118,6 +129,7 @@ func (sm *ShardMaster) makeScores() {
 			return
 		}
 		sm.addScores(score)
+		return
 	}
 }
 

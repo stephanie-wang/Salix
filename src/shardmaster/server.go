@@ -229,13 +229,14 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
   defer sm.mu.Unlock()
 
   op := Op{Type:"LEAVE", GID: args.GID}
-  sm.propose(op, func(a Op, b Op) bool {
+  seq := sm.propose(op, func(a Op, b Op) bool {
     if a.Type == b.Type && a.GID == b.GID {
       return true
     }
     return false
     })
 
+  sm.update(seq, -1)
   return nil
 }
 
@@ -359,7 +360,6 @@ func (sm *ShardMaster) Revive(){
   defer sm.mu.Unlock()
   sm.restartMemory()
   sm.fail = false
-  
 }
 
 // please don't change this function.
@@ -395,6 +395,7 @@ func (sm *ShardMaster) startMemory() {
 func (sm *ShardMaster) restartMemory(){
   sm.startMemory()
   sm.makeConfig()
+  sm.makeScores()
 }
 
 //
@@ -433,7 +434,7 @@ func StartServer(servers []string, me int) *ShardMaster {
       // when a server has failed, we are not serving any connections
       if sm.fail {
         conn.Close()
-        continue
+        // continue
       }
       if err == nil && sm.dead == false {
         if sm.unreliable && (rand.Int63() % 1000) < 100 {
