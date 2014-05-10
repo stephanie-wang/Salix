@@ -693,7 +693,7 @@ func (kv *ShardKV) popularityPing() {
       popularities[shard] = kv.popularities[shard].popularity()
     }
   }
-  kv.sm.PopularityPing(popularities, kv.config.Num, kv.gid)
+  kv.sm.PopularityPing(popularities, kv.config.Num, kv.current, kv.gid)
 }
 
 func (kv *ShardKV) Reshard(args *ReshardArgs, reply *Reply) error {
@@ -869,7 +869,7 @@ func StartServer(gid int64, shardmasters []string,
   go func() {
     for kv.dead == false {
       kv.tick()
-      //kv.popularityPing()
+      kv.popularityPing()
       //kv.cleanTmp()
       time.Sleep(250 * time.Millisecond)
     }
