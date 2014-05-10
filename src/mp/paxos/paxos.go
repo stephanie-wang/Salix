@@ -216,24 +216,23 @@ func (px *Paxos) lowestUndecided() int {
     }
   }
   
-  //make sure slots betw lowest and highest exist
-  for i:=min; i<=max; i++ {
-    px.GetInstance(i)
+  //make sure slots betw lowest and highest+1 exist
+  for i:=min; i<=max+1; i++ {
+    px.GetInstance(i) //needs to be a no lock version w/ locks around it :p
   }
 
   px.mu.Lock()
-  //then search for lowest undecided
-  lowest := math.MaxInt32
+  defer px.mu.Unlock()
+  //then search for first undecided
   for slot, inst := range px.instances {
     inst.mu.Lock()
-    if !inst.Decided && slot < lowest { //TODO: not sure if lowest undecided or lowest unaccepted
-      lowest = slot
+    defer inst.mu.Unlock()
+    if !inst.Decided {
+      return slot
     }
-    inst.mu.Unlock()
   }
-  px.mu.Unlock()
 
-  return lowest
+  return math.MaxInt32
 }
 
 func (px *Paxos) deferred() {
@@ -353,6 +352,9 @@ func (px *Paxos) preparer(view int) {
         inst := px.GetInstanceNoLock(slot)
         inst.mu.Lock()
         //inst.View_a = view  //new view
+        
+        px.Dprintf("***[%v][view=%v] highest accept seq=%v, val=%v, view_a=%v preparer(view=%v)\n", px.me, inst.View_a, slot, inst.V_a, px.view, view)
+        
         inst.mu.Unlock()
       }
         
@@ -417,6 +419,8 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     if inst.Accepted {  //TODO: need decided here?
       v_prime = inst.V_a
       x = inst.View_a
+      
+      Dprintf("***[%v][view=%v] usingprevhighest: v=%v x=%v proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, v_prime, x, view, seq, valStr(v))
     }
     inst.mu.Unlock()
     
@@ -553,7 +557,7 @@ func (px *Paxos) prober(view int, seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  //px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
 
   px.fdHearFrom(args.Me)
 
@@ -615,7 +619,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     px.Dprintf("***[%v][view=%v] %v %v inst.View_a=%v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, inst.View_a, args.View, args.Seq, valStr(args.V), args.Me)
   //}
   
-  if args.View >= px.view {
+  if args.View == px.view {
     px.view = args.View
     inst.View_a = args.View
     inst.V_a = args.V
