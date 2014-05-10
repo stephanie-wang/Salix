@@ -229,10 +229,67 @@ func (px *Paxos) prober(seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+  px.fdHearFrom(args.Me)
+  
+  if args.View >= px.view {
+    if args.Me != px.me {
+      px.view = args.View
+    }
+    
+    //reply.Accepted is used by the peer when determining
+    //the highest View_a of an instance
+    reply.Accepted = make(map[int]PaxosInstance)
+    
+    if args.Me != px.me {
+      px.mu.Lock()
+      defer px.mu.Unlock()
+    }
+    
+    for slot,inst := range px.instances {
+      inst.mu.Lock()
+      if slot >= args.LowestUndecided && inst.Accepted {
+        reply.Accepted[slot] = *inst
+      }
+      inst.mu.Unlock()
+    }
+    reply.Ok = true
+  } else {
+    reply.Ok = false;
+  }
+  reply.View = px.view
+  
   return nil
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
+  if args.Seq < px.Min() {
+    return nil
+  }
+  
+  px.fdHearFrom(args.Me)
+  
+  inst := px.GetInstanceNoLock(args.Seq)
+  
+  if args.Me != px.me {
+    px.mu.Lock()
+    defer px.mu.Unlock()
+  }
+  
+  inst.mu.Lock()
+
+  if args.View == px.view {
+    px.view = args.View
+    inst.View_a = args.View
+    inst.V_a = args.V
+    inst.Accepted = true
+    reply.Ok = true
+  } else {
+    reply.Ok = false
+  }
+  reply.View = px.view
+
+  inst.mu.Unlock()
+  
   return nil;
 }
 

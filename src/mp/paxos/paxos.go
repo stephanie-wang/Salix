@@ -586,13 +586,6 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     }
     reply.Ok = true
     
-    
-  if px.aimd {
-    px.timeout -= 1 //success
-    if px.timeout < 20 {
-      px.timeout = 20
-    }
-  }
 
     
   } else {
