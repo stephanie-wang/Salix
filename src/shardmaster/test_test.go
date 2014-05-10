@@ -80,7 +80,7 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
   }
 }
 
-func TestRebalance(t *testing.T) {
+func TestRebalanceAlgorithm(t *testing.T) {
   
   fmt.Printf("Test: Basic rebalance ...\n")
   var scores [NShards]int = [NShards]int{1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
@@ -192,6 +192,66 @@ func TestRebalance(t *testing.T) {
   }
   
   fmt.Printf("... passed \n")
+}
+
+func TestRebalance(t *testing.T){
+  const nservers = 3
+  var sma []*ShardMaster = make([]*ShardMaster, nservers)
+  var kvh []string = make([]string, nservers)
+  defer cleanup(sma)
+
+  for i := 0; i < nservers; i++ {
+    kvh[i] = port("basic", i)
+  }
+  for i := 0; i < nservers; i++ {
+    sma[i] = StartServer(kvh, i)
+  }
+
+  ck := MakeClerk(kvh)
+  var cka [nservers]*Clerk
+  for i := 0; i < nservers; i++ {
+    cka[i] = MakeClerk([]string{kvh[i]})
+  }
+
+  fmt.Printf("Test: Rebalance ...\n")
+
+  var gid1 int64 = 1
+  ck.Join(gid1, []string{"x", "y", "z"})
+
+  var gid2 int64 = 2
+  ck.Join(gid2, []string{"a", "b", "c"})
+
+  var gid3 int64 = 3
+  ck.Join(gid3, []string{"d", "e", "f"})
+
+  fmt.Println(sma[0].scores)
+  fmt.Println(sma[0].configs)
+
+  current := ck.Query(-1)
+  fmt.Println(current)
+  
+  newPops1 := make(map[int]int)
+  newPops2 := make(map[int]int)
+  newPops3 := make(map[int]int)
+
+  for i, gid := range current.Shards {
+    if gid == gid1 {
+      newPops1[i] = 100
+    }
+    if gid == gid2 {
+      newPops2[i] = 1
+    }
+    if gid == gid3 {
+      newPops3[i] = 1
+    }
+  }
+
+  ck.PopularityPing(newPops1, current.Num, gid1)
+  ck.PopularityPing(newPops2, current.Num, gid2)
+  ck.PopularityPing(newPops2, current.Num, gid2)
+
+  fmt.Println(ck.Query(-1))
+
 }
 
 func TestBasic(t *testing.T) {
@@ -537,7 +597,7 @@ func TestPersistance(t *testing.T) {
   sa1 := cfx.Groups[gid1]
 
   sma[0].Fail()
-  sma[0].Revive()
+  
 
   if len(sa1) != 3 || sa1[0] != "x" || sa1[1] != "y" || sa1[2] != "z" {
     t.Fatal("wrong servers for gid %v: %v\n", gid1, sa1)
@@ -549,6 +609,7 @@ func TestPersistance(t *testing.T) {
 
   ck.Leave(gid1)
   check(t, []int64{gid2}, ck)
+  sma[0].Revive()
   cfa[4] = ck.Query(-1)
 
   ck.Leave(gid1)

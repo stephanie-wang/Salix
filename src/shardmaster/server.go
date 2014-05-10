@@ -88,11 +88,11 @@ func (sm *ShardMaster) execute(op Op) {
   // popularity score is only valid if it's the current configuration
   if op.Type == "POPULARITY" && current.Num == op.ConfigNum {
     seq, ok := sm.latestHeard[op.GID]
-    
+    fmt.Println("POPULARITY REPORT RECEIVED")
     // only save score if we haven't heard from group before
     // or if the sequence number from this group is higher than before
     if !ok || op.Seq > seq {
-      
+      fmt.Println("AND IT'S VALID")
       // WAL means we must create copies of sm.scores
       // and sm.latestHeard so that we can log them
       // before we actually set them in our memory
@@ -104,6 +104,7 @@ func (sm *ShardMaster) execute(op Op) {
         newScores[shard] = score
       }
 
+      fmt.Println("NEW SCORES ARE ", newScores)
       newLatestHeard := make(map[int64]int)
       for gid, val := range sm.latestHeard {
         newLatestHeard[gid] = val
@@ -115,9 +116,10 @@ func (sm *ShardMaster) execute(op Op) {
       sm.latestHeard = newLatestHeard
     }
 
+    fmt.Println(sm.latestHeard)
     // all groups have reported values for this config
     if len(sm.latestHeard) == len(current.Groups) {
-      
+      fmt.Println("HAVE ALL REPORTS NOW")
       newGroups := make(map[int64][]string)
       for gid, servers := range current.Groups {
         newGroups[gid] = servers
