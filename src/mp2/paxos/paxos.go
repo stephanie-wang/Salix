@@ -223,8 +223,9 @@ func (px *Paxos) lowestUndecided() int {
 func (px *Paxos) preparer(view int) {
   Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
   
-  px.mu2.Lock()
-  defer px.mu2.Unlock()
+  //this breaks code
+  //px.mu2.Lock()
+  //defer px.mu2.Unlock()
   
   for !px.dead {
     if px.view >= view {
@@ -315,8 +316,9 @@ func (px *Paxos) driver(seq int, v interface{}) {
   inst := px.GetInstance(seq)
   
   for !inst.Decided && !px.dead {   
-    px.mu2.RLock()
-    defer px.mu2.RUnlock()
+    //this breaks code
+    //px.mu2.RLock()
+    //defer px.mu2.RUnlock()
     
     view := px.view
     leader := px.leader(view)
