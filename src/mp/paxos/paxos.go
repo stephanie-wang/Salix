@@ -207,31 +207,32 @@ func (px *Paxos) leader(view int) int {
 func (px *Paxos) lowestUndecided() int {
   //find lowest slot
   min := px.Min()
+  min = 0
 
   //find highest slot
-  max := -1
-  for slot,_ := range px.instances {
-    if slot > max {
-      max = slot
-    }
-  }
+//  max := -1
+//  for slot,_ := range px.instances {
+//    if slot > max {
+//      max = slot
+//   }
+//  }
   
-  //make sure slots betw lowest and highest+1 exist
-  for i:=min; i<=max+1; i++ {
-    px.GetInstance(i) //needs to be a no lock version w/ locks around it :p
-  }
+max := 3000
 
   px.mu.Lock()
   defer px.mu.Unlock()
-  //then search for first undecided
-  for slot, inst := range px.instances {
-    inst.mu.Lock()
-    defer inst.mu.Unlock()
+
+  for slot:=min; slot<=max+1; slot++ {
+	inst := px.GetInstanceNoLock(slot)
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
     if !inst.Decided {
+//fmt.Println(min, max+1, slot)
       return slot
     }
   }
 
+//fmt.Println(min, max+1, math.MaxInt32)
   return math.MaxInt32
 }
 
@@ -243,6 +244,8 @@ func (px *Paxos) deferred() {
 //installs the view
 func (px *Paxos) preparer(view int) {
   px.Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+
+  fmt.Println(px.Min(), px.Max())
 
   px.changing = true
   px.mu2.Lock()
@@ -557,7 +560,7 @@ func (px *Paxos) prober(view int, seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  //px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
 
   px.fdHearFrom(args.Me)
 
@@ -616,7 +619,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   inst.mu.Lock()
   
   //if args.Me == 3 {
-    px.Dprintf("***[%v][view=%v] %v %v inst.View_a=%v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, inst.View_a, args.View, args.Seq, valStr(args.V), args.Me)
+ //   px.Dprintf("***[%v][view=%v] %v %v inst.View_a=%v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, inst.View_a, args.View, args.Seq, valStr(args.V), args.Me)
   //}
   
   if args.View == px.view {
