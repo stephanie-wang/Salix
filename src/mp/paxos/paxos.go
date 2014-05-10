@@ -412,12 +412,15 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     }
   
     v_prime := v;
+    x := view
     inst.mu.Lock()
     if inst.Accepted {  //TODO: need decided here?
       v_prime = inst.V_a
+      x = inst.View_a
     }
-    //x := inst.View_a
     inst.mu.Unlock()
+    
+    _ = x
     
     //send Accept to all peers
     numAcceptOks := 0
@@ -427,7 +430,7 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     
       acceptArgs := AcceptArgs{}
       acceptArgs.Seq = seq
-      acceptArgs.View = view //x //view
+      acceptArgs.View = view //view //x //view
       acceptArgs.V = v_prime
       acceptArgs.Me = px.me
       acceptReply := AcceptReply{}

@@ -6,7 +6,7 @@ TODO: TestLots
         test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
         test_test.go:35: decided values do not match; seq=4 i=2 v=9 v1=5
 
-cd ~/6.824/Salix/src/mp/paxos/        
+cd ~/6.824/Salix/src/mp/paxos/ ; ../../multitest.sh -run TestLots       
 cls;  ../../multitest.sh -run TestLots 2>&1 | grep -v unexpected | grep -v connection | grep -v write
 */
 
@@ -705,7 +705,7 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
 func TestPartition(t *testing.T) {
   //return//
   
-  //Debug = 1
+  Debug = 1
 
   runtime.GOMAXPROCS(4)
 
