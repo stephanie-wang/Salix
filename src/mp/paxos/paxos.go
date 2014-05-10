@@ -45,10 +45,10 @@ func Dprintf(format string, a ...interface{}) (n int, err error) {
   return
 }
 
-const printFullVal = true
+var PrintFullVal bool = true
 
 func valStr(v interface{}) interface{} {
-  if printFullVal {
+  if PrintFullVal {
     return v
   } else {
     return "(v)"
@@ -57,12 +57,15 @@ func valStr(v interface{}) interface{} {
 
 type Paxos struct {
   mu sync.Mutex
+  mu2 sync.RWMutex
   l net.Listener
   dead bool
   unreliable bool
   rpcCount int
   peers []string
   me int // index into peers[]
+  
+  changing bool
   
   numPeers int
   majority int  //floor(numPeers/2) + 1
@@ -234,9 +237,18 @@ func (px *Paxos) lowestUndecided() int {
   return lowest
 }
 
+func (px *Paxos) deferred() {
+    px.changing = false
+    px.mu2.Unlock()
+}
+
 //installs the view
 func (px *Paxos) preparer(view int) {
   px.Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+
+  px.changing = true
+  px.mu2.Lock()
+  defer px.deferred()
 
 
   for !px.dead {
@@ -370,6 +382,9 @@ func (px *Paxos) driver(seq int, v interface{}) {
 
 func (px *Paxos) proposer(view int, seq int, v interface{}) {
 
+  px.mu2.RLock()
+  defer px.mu2.RUnlock()
+
   inst := px.GetInstance(seq)
 
   if view <= inst.proposerView {
@@ -380,6 +395,10 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
   Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
 
   for inst.State != STATE_DECIDED && !px.dead {    
+  
+    if px.changing {
+      return
+    }
   
     v_prime := v;
     inst.mu.Lock()
@@ -875,6 +894,7 @@ func (px *Paxos) fdOnFail(view int) {
     for px.leader(view) != px.me {
       view += 1
     }
+    
     go px.preparer(view)
   }
 }

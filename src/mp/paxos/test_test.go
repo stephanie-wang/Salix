@@ -723,13 +723,6 @@ func TestPartition(t *testing.T) {
   defer part(t, tag, npaxos, []int{}, []int{}, []int{})
 
   seq := 0
-
-  
-  
-  
-  Debug = 0
-  PrintNdecided = 0
-  
   
   
   //time.Sleep(10000*time.Millisecond)
@@ -769,6 +762,9 @@ func TestPartition(t *testing.T) {
   
 
   //DPrintf("kobe")
+
+  Debug = 1
+  PrintNdecided = 0
 
   for iters := 0; iters < 20; iters++ {
     seq++
