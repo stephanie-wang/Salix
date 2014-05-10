@@ -316,6 +316,8 @@ func (px *Paxos) preparer(view int) {
 //        }
 //      }
       
+      changed := make([]int, 0)
+      
       for _, reply := range replies {
         if reply.Accepted != nil {
           for slot, recvd := range reply.Accepted {
@@ -333,10 +335,11 @@ func (px *Paxos) preparer(view int) {
             
               if !inst.Accepted ||
                    //recvd.Decided ||
-                   (recvd.Accepted && recvd.View_a > inst.View_a) {
+                   (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
                 inst.Accepted = recvd.Accepted
                 inst.View_a = recvd.View_a
                 inst.V_a = recvd.V_a
+                changed = append(changed, slot)
               }
               
             }
@@ -345,11 +348,18 @@ func (px *Paxos) preparer(view int) {
           }
         }
       }
+      
+      for _, slot := range changed {
+        inst := px.GetInstanceNoLock(slot)
+        inst.mu.Lock()
+        //inst.View_a = view  //new view
+        inst.mu.Unlock()
+      }
         
       for slot, inst := range px.instances {
         inst.mu.Lock()        
         if (inst.Accepted && !inst.Decided) {
-          go px.proposer(view, slot, inst.View_a)
+          go px.proposer(view, slot, inst.V_a)
         }
         inst.mu.Unlock()
       }
@@ -369,7 +379,7 @@ func (px *Paxos) driver(seq int, v interface{}) {
     view := px.view
     leader := px.leader(view)
 
-    px.Dprintf("***[%v][view=%v] driver(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
+    //px.Dprintf("***[%v][view=%v] driver(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
     
     if leader == px.me {
       px.proposer(view, seq, v)
@@ -406,6 +416,7 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     if inst.Accepted {  //TODO: need decided here?
       v_prime = inst.V_a
     }
+    x := inst.View_a
     inst.mu.Unlock()
     
     //send Accept to all peers
@@ -416,7 +427,7 @@ func (px *Paxos) proposer(view int, seq int, v interface{}) {
     
       acceptArgs := AcceptArgs{}
       acceptArgs.Seq = seq
-      acceptArgs.View = view
+      acceptArgs.View = x //view
       acceptArgs.V = v_prime
       acceptArgs.Me = px.me
       acceptReply := AcceptReply{}
@@ -586,10 +597,6 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
   inst := px.GetInstance(args.Seq)
 
-  //if args.Me == 3 {
-    px.Dprintf("***[%v][view=%v] %v %v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, args.View, args.Seq, valStr(args.V), args.Me)
-  //}
-
   if args.Seq < px.Min() {
     return nil
   }
@@ -601,11 +608,17 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   px.mu.Lock()
   inst.mu.Lock()
   
+  //if args.Me == 3 {
+    px.Dprintf("***[%v][view=%v] %v %v inst.View_a=%v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, inst.View_a, args.View, args.Seq, valStr(args.V), args.Me)
+  //}
+  
   if args.View > px.view {
     px.view = args.View
     reply.Ok = false
   } else {
-    if inst.View_a == args.View {   //TODO
+    if args.View >= inst.View_a{   //TODO
+      inst.View_a = args.View //not sure if this needed
+      
       inst.V_a = args.V
       inst.Accepted = true
       reply.Ok = true

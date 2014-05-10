@@ -1,3 +1,8 @@
+/*
+TODO: when starting a new prepare thread, make sure there are no other threads running!
+also, separate decided logic.
+*/
+
 package paxos
 
 //
@@ -29,63 +34,110 @@ import "sync"
 import "fmt"
 import "math/rand"
 import "math"
+import "time"
 
-type ProposalNum struct {
-  Hi int
-  Low int
+var Debug int = 0
+
+func Dprintf(format string, a ...interface{}) (n int, err error) {
+  if Debug > 0 {
+    log.Printf(format, a...)
+  }
+  return
 }
 
-type PaxosInstance struct {
-  mu sync.Mutex
+var PrintFullVal bool = true
 
-  //proposer
-  decided bool
-  decidedVal interface{}
-  highest_N ProposalNum
-  
-  //acceptor
-  n_p ProposalNum
-  n_a ProposalNum
-  v_a interface{}
+func valStr(v interface{}) interface{} {
+  if PrintFullVal {
+    return v
+  } else {
+    return "(v)"
+  }
 }
 
 type Paxos struct {
   mu sync.Mutex
+  mu2 sync.RWMutex
   l net.Listener
   dead bool
   unreliable bool
   rpcCount int
   peers []string
   me int // index into peers[]
-
-  instances map[int]*PaxosInstance  //Paxos instances
-  max int // number returned by Max()
+  
+  changing bool
+  
   numPeers int
   majority int  //floor(numPeers/2) + 1
-  
+
+  view int
+  instances map[int]*PaxosInstance  //Paxos instances
+  max int // number returned by Max()  
   doneVals []int  //done vals for each peer
+
+  //duplicate detection for start. leader should not propose same value twice
+  seen map[int]interface{}
+
+  //failure detection
+  fdMu sync.Mutex
+  fdLastPing time.Time
+  fdInstall int
+  timeout int
+  aimd bool
 }
 
-type PrepareArgs struct {
-  Seq int
-  N ProposalNum
+type PaxosInstance struct {
+  mu sync.Mutex
+  Accepted bool
+  View_a int
+  V_a interface{}
+  
+  Decided bool
+  DecidedVal interface{}
+  
+  //duplicate thread detection
+  proberView int
+  proposerView int
+}
+
+func MakeInstance() *PaxosInstance {
+  inst := &PaxosInstance{}
+
+  inst.Accepted = false
+  inst.View_a = 0
+  inst.V_a = nil
+  
+  inst.Decided = false
+  inst.DecidedVal = nil
+  
+  inst.proberView = -1
+  inst.proposerView = -1
+  
+  return inst
+}
+
+type PrepareArgs struct {  
+  View int
+  LowestUndecided int
+  Me int
 }
 
 type PrepareReply struct {
   Ok bool //true=ok, false=reject
-  N ProposalNum
-  V interface{}  
+  Accepted map[int]PaxosInstance  //includes decided
+  View int
 }
 
 type AcceptArgs struct {
   Seq int
-  N ProposalNum
+  View int
   V interface{}  
+  Me int
 }
 
 type AcceptReply struct {
   Ok bool //true=ok, false=reject
-  //N ProposalNum   //proposer doesn't need to check this value
+  View int
 }
 
 type DecidedArgs struct {
@@ -100,15 +152,25 @@ type DecidedReply struct {
   DoneVal int
 }
 
-// returns true if a > b
-func ProposalNumGT(a ProposalNum, b ProposalNum) bool {
-  if a.Hi > b.Hi {
-    return true
-  } else if a.Hi < b.Hi {
-    return false
-  } else {
-    return a.Low > b.Low
+type ProbeArgs struct {
+  Seq int
+  
+  Me int
+  DoneVal int
+}
+
+type ProbeReply struct {
+  Decided bool
+  DecidedVal interface{}
+  
+  DoneVal int
+}
+
+func (px *Paxos) Dprintf(format string, a ...interface{}) (n int, err error) {
+  if Debug > 0 {
+    log.Printf(format, a...)
   }
+  return
 }
 
 // returns px.instances[seq], creating it if necessary
@@ -116,48 +178,15 @@ func (px *Paxos) GetInstance(seq int) *PaxosInstance {
   px.mu.Lock()
   defer px.mu.Unlock()
 
+  return px.GetInstanceNoLock(seq)
+}
+
+func (px *Paxos) GetInstanceNoLock(seq int) *PaxosInstance {
   _, ok := px.instances[seq]
   if !ok {
     px.instances[seq] = MakeInstance()
   }
   return px.instances[seq]
-}
-
-// args = value, reply = pointer
-//
-// call() sends an RPC to the rpcname handler on server srv
-// with arguments args, waits for the reply, and leaves the
-// reply in reply. the reply argument should be a pointer
-// to a reply structure.
-//
-// the return value is true if the server responded, and false
-// if call() was not able to contact the server. in particular,
-// the replys contents are only valid if call() returned true.
-//
-// you should assume that call() will time out and return an
-// error after a while if it does not get a reply from the server.
-//
-// please use call() to send all RPCs, in client.go and server.go.
-// please do not change this function.
-//
-func call(srv string, name string, args interface{}, reply interface{}) bool {
-  c, err := rpc.Dial("unix", srv)
-  if err != nil {
-    err1 := err.(*net.OpError)
-    if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-      fmt.Printf("paxos Dial() failed: %v\n", err1)
-    }
-    return false
-  }
-  defer c.Close()
-    
-  err = c.Call(name, args, reply)
-  if err == nil {
-    return true
-  }
-
-  fmt.Println(err)
-  return false
 }
 
 // merge doneVals (received via RPC) with local doneVals
@@ -170,204 +199,490 @@ func (px *Paxos) MergeDoneVals(doneVal int, from int) {
   }
 }
 
-// use function call if srv == me, otherwise use RPC call()
-// also calls freememory
-func (px *Paxos) Call2(srv string, name string, args interface{}, reply interface{}) bool {
-  var err error
-  
-  if srv == px.peers[px.me] {
-    if name == "Paxos.Prepare" {
-      prepareArgs := args.(PrepareArgs)
-      prepareReply := reply.(*PrepareReply)
-      err = px.Prepare(&prepareArgs, prepareReply)
-    } else if name == "Paxos.Accept" {
-      acceptArgs := args.(AcceptArgs)
-      acceptReply := reply.(*AcceptReply)
-      err = px.Accept(&acceptArgs, acceptReply)
-    } else if name == "Paxos.Decided" {
-      decidedArgs := args.(DecidedArgs)
-      decidedReply := reply.(*DecidedReply)
-      err = px.Decided(&decidedArgs, decidedReply)
-    } else {
-      return false
-    }
-    if err == nil {
-      return true
-    }
-
-    fmt.Println(err)
-    return false
-  } else {
-    result := call(srv, name, args, reply)
-    return result
-  }
+func (px *Paxos) leader(view int) int {
+  return view % len(px.peers)
 }
 
-func (px *Paxos) proposer(seq int, v interface{}) {
-  inst := px.GetInstance(seq)  
+//this is inefficiently done
+func (px *Paxos) lowestUndecided() int {
+  //find lowest slot
+  min := px.Min()
+
+  //find highest slot
+  max := -1
+  for slot,_ := range px.instances {
+    if slot > max {
+      max = slot
+    }
+  }
   
-  for !inst.decided && !px.dead {
+  //make sure slots betw lowest and highest exist
+  for i:=min; i<=max; i++ {
+    px.GetInstance(i)
+  }
+
+  px.mu.Lock()
+  //then search for lowest undecided
+  lowest := math.MaxInt32
+  for slot, inst := range px.instances {
     inst.mu.Lock()
-    var n ProposalNum = ProposalNum{inst.highest_N.Hi + 1, px.me}
-    inst.highest_N = n  //ensures next iter will use even higher proposal number
+    if !inst.Decided && slot < lowest { //TODO: not sure if lowest undecided or lowest unaccepted
+      lowest = slot
+    }
     inst.mu.Unlock()
+  }
+  px.mu.Unlock()
+
+  return lowest
+}
+
+func (px *Paxos) deferred() {
+    px.changing = false
+    px.mu2.Unlock()
+}
+
+//installs the view
+func (px *Paxos) preparer(view int) {
+  px.Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+
+  px.changing = true
+  px.mu2.Lock()
+  defer px.deferred()
+
+
+  for !px.dead {
+    
+    if px.view >= view {
+      px.Dprintf("***[%v][view=%v] exit-early preparer(view=%v)\n", px.me, px.view, view)
+      return
+    }
     
     //send Prepare to all peers
     
     var numPrepareOks int = 0
     var numPrepareRejects int = 0
-    var v_prime interface{} = v
-    var highest_n ProposalNum = ProposalNum{-1, -1}
+    
+    lowestUndecided := px.lowestUndecided()
+    replies := make([]PrepareReply, 0)
     
     for i:=0; i<px.numPeers && !px.dead; i++ {
-        prepareArgs := PrepareArgs{}
-        prepareArgs.Seq = seq
-        prepareArgs.N = n
-        prepareReply := PrepareReply{}
-        
-        if !px.Call2(px.peers[i], "Paxos.Prepare", prepareArgs, &prepareReply) {
-          //treat RPC failure as prepareReject
-          prepareReply.Ok = false
-        }
-        
+    
+    
+      prepareArgs := PrepareArgs{}
+      prepareArgs.View = view;
+      prepareArgs.LowestUndecided = lowestUndecided
+      prepareArgs.Me = px.me
+      prepareReply := PrepareReply{}
+      
+      if !px.Call2(px.peers[i], "Paxos.Prepare", prepareArgs, &prepareReply) {
+        //treat RPC failure as prepareReject
+        numPrepareRejects = numPrepareRejects + 1
+      } else {
+        px.fdHearFrom(i)
         if prepareReply.Ok {
           numPrepareOks = numPrepareOks + 1
-
-          //keep track of highest prepareOk proposal number / value
-          if ProposalNumGT(prepareReply.N, highest_n) {
-            highest_n = prepareReply.N
-            v_prime = prepareReply.V
+          replies = append(replies, prepareReply)
+        } else if prepareReply.View > px.view {
+          //pre-empted. give the other guy more time to finish
+          
+          if px.aimd {
+            px.timeout *= 2 //failure
+            if px.timeout > 10000 {
+              px.timeout = 10000
+            }
           }
-
-          //track highest proposal num seen
-          inst.mu.Lock()
-          if ProposalNumGT(prepareReply.N, inst.highest_N) {
-            inst.highest_N = prepareReply.N
-          }
-          inst.mu.Unlock()
-        } else {
-          numPrepareRejects = numPrepareRejects + 1
+          
+          return;
         }
-        
-        //abort early if enough oks or too many rejects/failures
-        if numPrepareOks >= px.majority {
-          break
-        }
-        if numPrepareRejects > px.numPeers - px.majority {
-          break
-        }
+      }
+      
+      //abort early if enough oks or too many rejects/failures
+      if numPrepareOks >= px.majority || numPrepareRejects > px.numPeers - px.majority {
+        break
+      }
     }
     
     if numPrepareOks >= px.majority {
-      //send Accept to all peers
+      px.Dprintf("***[%v][view=%v] got-majority preparer(view=%v)\n", px.me, px.view, view)
+    
+      px.mu.Lock()
       
-      var numAcceptOks int = 0
-      var numAcceptRejects int = 0
+      px.view = view
+        
+//      if px.aimd {
+//        px.timeout -= 1 //success
+//        if px.timeout < 1 {
+//          px.timeout = 1
+//        }
+//      }
       
-      for i:=0; i<px.numPeers && !px.dead; i++ {
-        acceptArgs := AcceptArgs{}
-        acceptArgs.Seq = seq
-        acceptArgs.N = n
-        acceptArgs.V = v_prime
-        acceptReply := AcceptReply{}
-        
-        if !px.Call2(px.peers[i], "Paxos.Accept", acceptArgs, &acceptReply) {          
-          //treat RPC failure as acceptReject
-          acceptReply.Ok = false
-        }
-          
-        if acceptReply.Ok {
-          numAcceptOks = numAcceptOks + 1          
-        } else {
-          numAcceptRejects = numAcceptRejects + 1
-        }
-        
-        //abort early if enough oks or too many rejects/failures
-        if numAcceptOks >= px.majority {
-          break
-        }
-        if numAcceptRejects > px.numPeers - px.majority {
-          break
-        }
-      }
+      changed := make([]int, 0)
+      
+      for _, reply := range replies {
+        if reply.Accepted != nil {
+          for slot, recvd := range reply.Accepted {
+            inst := px.GetInstanceNoLock(slot)
+            inst.mu.Lock()
             
-      if numAcceptOks >= px.majority {
-        //send Decided to all peers
-        
-        for i:=0; i<px.numPeers && !px.dead; i++ {
-          decidedArgs := DecidedArgs{}
-          decidedArgs.Seq = seq
-          decidedArgs.V = v_prime
-          decidedArgs.Me = px.me
-          decidedArgs.DoneVal = px.doneVals[px.me]
-          decidedReply := DecidedReply{}
-          if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
-            px.MergeDoneVals(decidedReply.DoneVal, i)
+            //don't overwrite my decided value!
+            
+            /*
+            if I'm decided, do nothing
+            otherwise, copy his values
+            */
+            
+            if !inst.Decided {  //TODO do we need this
+            
+              if !inst.Accepted ||
+                   //recvd.Decided ||
+                   (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
+                inst.Accepted = recvd.Accepted
+                inst.View_a = recvd.View_a
+                inst.V_a = recvd.V_a
+                changed = append(changed, slot)
+              }
+              
+            }
+            
+            inst.mu.Unlock()
           }
         }
       }
+      
+      for _, slot in range := changed {
+        inst := px.GetInstanceNoLock(slot)
+        inst.mu.Lock()
+        inst.View_a = view  //new view
+        inst.mu.Unlock()
+      }
+        
+      for slot, inst := range px.instances {
+        inst.mu.Lock()        
+        if (inst.Accepted && !inst.Decided) {
+          go px.proposer(view, slot, inst.V_a)
+        }
+        inst.mu.Unlock()
+      }
+      
+      px.mu.Unlock()  //move this lock up?
+      
+      px.Dprintf("***[%v][view=%v] done preparer(view=%v)\n", px.me, px.view, view)
+      return
+    }
+  }
+}
+
+func (px *Paxos) driver(seq int, v interface{}) {
+  inst := px.GetInstance(seq)
+  
+  for !inst.Decided && !px.dead {      
+    view := px.view
+    leader := px.leader(view)
+
+    px.Dprintf("***[%v][view=%v] driver(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
+    
+    if leader == px.me {
+      px.proposer(view, seq, v)
+    } else {
+      px.prober(view, seq)
+    }
+  }
+  
+  px.Dprintf("***[%v][view=%v] exit driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
+}
+
+func (px *Paxos) proposer(view int, seq int, v interface{}) {
+
+  px.mu2.RLock()
+  defer px.mu2.RUnlock()
+
+  inst := px.GetInstance(seq)
+
+  if view <= inst.proposerView {
+    return
+  }
+  inst.proposerView = view
+
+  Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+
+  for !inst.Decided && !px.dead {    
+  
+    if px.changing {
+      return
+    }
+  
+    v_prime := v;
+    inst.mu.Lock()
+    if inst.Accepted {  //TODO: need decided here?
+      v_prime = inst.V_a
+    }
+    inst.mu.Unlock()
+    
+    //send Accept to all peers
+    numAcceptOks := 0
+    numAcceptRejects := 0
+    
+    for i:=0; i<px.numPeers && !px.dead; i++ {
+    
+      acceptArgs := AcceptArgs{}
+      acceptArgs.Seq = seq
+      acceptArgs.View = view
+      acceptArgs.V = v_prime
+      acceptArgs.Me = px.me
+      acceptReply := AcceptReply{}
+      
+      if !px.Call2(px.peers[i], "Paxos.Accept", acceptArgs, &acceptReply) {          
+        //treat RPC failure as acceptReject
+        acceptReply.Ok = false
+      } else {
+        px.fdHearFrom(i)
+      }
+      
+      if px.view > view {
+        px.Dprintf("***[%v][view=%v] 1 aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+        return
+      }
+      
+      if acceptReply.View > view {
+        px.view = acceptReply.View
+        px.Dprintf("***[%v][view=%v] 2 aborting proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+        return
+      }
+      
+      if acceptReply.Ok {
+        numAcceptOks = numAcceptOks + 1          
+      } else {
+        numAcceptRejects = numAcceptRejects + 1
+      }
+      
+      //abort early if enough oks or too many rejects/failures
+      if numAcceptOks >= px.majority || numAcceptRejects > px.numPeers - px.majority{
+        break
+      }
+    }
+          
+    if numAcceptOks >= px.majority {
+      //send Decided to all peers
+      
+      for i:=0; i<px.numPeers && !px.dead; i++ {
+        decidedArgs := DecidedArgs{}
+        decidedArgs.Seq = seq
+        decidedArgs.V = v_prime
+        decidedArgs.Me = px.me
+        decidedArgs.DoneVal = px.doneVals[px.me]
+        decidedReply := DecidedReply{}
+        if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
+          px.fdHearFrom(i)
+          px.MergeDoneVals(decidedReply.DoneVal, i)
+        }
+      }
+    }
+    
+    if !inst.Decided {
+      //if px.me == 3 {
+      //  px.Dprintf("***[%v][view=%v] retrying proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+      //}
+    } else {
+      px.Dprintf("***[%v][view=%v] done proposer(view=%v, seq=%v, v=%v)\n", px.me, px.view, view, seq, valStr(v))
+    }
+  }
+}
+
+func (px *Paxos) prober(view int, seq int) {
+
+  inst := px.GetInstance(seq)
+  
+  //TODO: lock this
+  if view <= inst.proberView {
+    return
+  }
+  inst.proberView = view
+
+  px.Dprintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+
+  
+  
+  for !inst.Decided && !px.dead {        
+    if px.view > view {
+      px.Dprintf("***[%v][view=%v] exit-early prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+      return
+    }
+  
+    for i:=0; i<px.numPeers && !px.dead; i++ {
+      probeArgs := ProbeArgs{}
+      probeArgs.Seq = seq
+      probeArgs.Me = px.me
+      probeArgs.DoneVal = px.doneVals[px.me]
+      probeReply := ProbeReply{}
+      
+      time.Sleep(1 * time.Millisecond)  //?
+      
+      if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {          
+      
+        px.MergeDoneVals(probeReply.DoneVal, i)
+        
+        if probeReply.Decided {
+          px.Dprintf("***[%v][view=%v] found! decidedVal=%v prober(view=%v, seq=%v)\n", px.me, px.view, valStr(probeReply.DecidedVal), view, seq)
+          inst.mu.Lock()
+          inst.Decided = true
+          inst.DecidedVal = probeReply.DecidedVal
+          inst.mu.Unlock()
+          
+          for i:=0; i<px.numPeers && !px.dead; i++ {
+            decidedArgs := DecidedArgs{}
+            decidedArgs.Seq = seq
+            decidedArgs.V = probeReply.DecidedVal
+            decidedArgs.Me = px.me
+            decidedArgs.DoneVal = px.doneVals[px.me]
+            decidedReply := DecidedReply{}
+            if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
+              px.fdHearFrom(i)
+              px.MergeDoneVals(decidedReply.DoneVal, i)
+            }
+          }
+          
+          return
+        }
+      }      
     }
   }
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  if args.Seq < px.Min() {
-    return nil
+  px.Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+
+  px.fdHearFrom(args.Me)
+
+/*
+  if args.Me != px.me {
+    px.mu.Lock()
+    defer px.mu.Unlock()
   }
+*/
   
-  inst := px.GetInstance(args.Seq)
-  
-  inst.mu.Lock()
-  if ProposalNumGT(args.N, inst.n_p) {
-    inst.n_p = args.N
-    reply.N = inst.n_a
-    reply.V = inst.v_a
+  if args.View >= px.view {
+    if args.Me != px.me {
+      px.view = args.View
+    }
+    
+    reply.Accepted = make(map[int]PaxosInstance)   //implicitly contains the N_a and V_a
+    for slot,inst := range px.instances {
+      inst.mu.Lock()
+      if slot >= args.LowestUndecided && inst.Accepted {
+        reply.Accepted[slot] = *inst
+      }
+      inst.mu.Unlock()
+    }
     reply.Ok = true
-  } else {
-    reply.Ok = false
+    
+    
+  if px.aimd {
+    px.timeout -= 1 //success
+    if px.timeout < 20 {
+      px.timeout = 20
+    }
   }
-  inst.mu.Unlock()
+
+    
+  } else {
+    reply.Ok = false;
+  }
+  reply.View = px.view
   
-  return nil
+  
+  return nil;
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {  
+  inst := px.GetInstance(args.Seq)
+
+  if args.Seq < px.Min() {
+    return nil
+  }
+
+  px.fdHearFrom(args.Me)
+
+  //inst := px.GetInstance(args.Seq)
+
+  px.mu.Lock()
+  inst.mu.Lock()
+  
+  //if args.Me == 3 {
+    px.Dprintf("***[%v][view=%v] %v %v inst.View_a=%v onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, inst.Accepted, inst.Decided, inst.View_a, args.View, args.Seq, valStr(args.V), args.Me)
+  //}
+  
+  if args.View > px.view {
+    px.view = args.View
+    reply.Ok = false
+  } else {
+    if inst.View_a == args.View {   //TODO
+      inst.V_a = args.V
+      inst.Accepted = true
+      reply.Ok = true
+    } else {
+      reply.Ok = false
+    }
+  }
+  reply.View = px.view
+  
+  inst.mu.Unlock()
+  px.mu.Unlock()
+  
+  return nil;
+}
+
+func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+  px.Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+
+  px.MergeDoneVals(args.DoneVal, args.Me)
+  reply.DoneVal = px.doneVals[px.me]
+
+//px.Dprintf("***[%v][view=%v] 1 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+
   if args.Seq < px.Min() {
     return nil
   }
   
-  inst := px.GetInstance(args.Seq)
+//px.Dprintf("***[%v][view=%v] 2 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
+  px.fdHearFrom(args.Me)
+  
+//px.Dprintf("***[%v][view=%v] 3 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  
+  inst := px.GetInstance(args.Seq)
+
+//px.Dprintf("***[%v][view=%v] 4 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+
+  //IMPORTANT: DO NOT CHANGE v_a!!! set DecidedVal instead  
   inst.mu.Lock()
-  if ProposalNumGT(args.N, inst.n_p) || args.N == inst.n_p {
-    inst.n_p = args.N
-    inst.n_a = args.N
-    inst.v_a = args.V
-    //reply.N = args.N  //not needed by proposer()
-    reply.Ok = true
-  } else {
-    reply.Ok = false
-  }
+  inst.Decided = true
+  inst.DecidedVal = args.V
   inst.mu.Unlock()
+  
+  //px.Dprintf("***[%v][view=%v] 5 onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   return nil
 }
 
-func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
+  //px.Dprintf("***[%v][view=%v] onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
 
   if args.Seq < px.Min() {
+    //px.Dprintf("***[%v][view=%v] nil onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
     return nil
   }
   
   inst := px.GetInstance(args.Seq)
-  
-  //IMPORTANT: DO NOT CHANGE v_a!!! set decidedVal instead
-  
+
   inst.mu.Lock()
-  inst.decided = true
-  inst.decidedVal = args.V
+  if inst.Decided {
+    //px.Dprintf("***[%v][view=%v] decided! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    reply.Decided = true
+    reply.DecidedVal = inst.DecidedVal
+  }
   inst.mu.Unlock()
   
   return nil
@@ -380,14 +695,44 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 // call Status() to find out if/when agreement
 // is reached.
 //
-func (px *Paxos) Start(seq int, v interface{}) {
+
+func (px *Paxos) Start(seq int, v interface{}) int {
+  view := px.view
+  leader := px.leader(view)
+
+  //px.Dprintf("***[%v][view=%v] Start(seq=%v, v=%v) leader=%v\n", px.me, px.view, seq, valStr(v), leader)
+
   px.mu.Lock()
   if seq > px.max {
     px.max = seq
   }
   px.mu.Unlock()
   
-  go px.proposer(seq, v)
+  //prevent leader from starting different value
+  px.mu.Lock()
+  oldV, ok := px.seen[seq]
+  if ok {
+    v = oldV
+    px.mu.Unlock()
+    return leader
+  } else {
+    px.seen[seq] = v
+  }
+  px.mu.Unlock()
+  
+  /*
+  if leader == px.me {
+    go px.proposer(view, seq, v)
+  } else {
+//If not leader and missed decided msg,
+//need to probe for decided vals
+    go px.prober(view, seq)
+  }
+  */
+  
+  go px.driver(seq, v)
+  
+  return leader
 }
 
 func (px *Paxos) FreeMemory(keepAtLeast int) {
@@ -482,11 +827,13 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   var retDecided bool = false
   var retVal interface{} = nil
   
+  //fucked!!!
+  
   if ok {
     inst.mu.Lock()
-    if inst.decided {
+    if inst.Decided {
       retDecided = true
-      retVal = inst.decidedVal
+      retVal = inst.DecidedVal
     }
     inst.mu.Unlock()
   }
@@ -506,17 +853,61 @@ func (px *Paxos) Kill() {
   }
 }
 
-func MakeInstance() *PaxosInstance {
-  inst := &PaxosInstance{}
+//
+// failure detection code
+//
 
-  inst.decided = false
-  inst.highest_N = ProposalNum{-1, -1}
+func (px *Paxos) fdStart() {
+  fdPrevTarget := -1
+  var prevLastPing time.Time
   
-  inst.n_p = ProposalNum{-1, -1}
-  inst.n_a = ProposalNum{-1, -1}
-  inst.v_a = nil
+  for !px.dead {
+    //timeout = 2 milliseconds works for TestBasic
+    //use over 50 milliseconds for TestRPCCount
+      //TODO: add more waits between probes/etc.
+    time.Sleep(time.Duration(px.timeout) * time.Millisecond)
+    
+    failed := false
+    view := px.view
+    
+    px.fdMu.Lock()
+    target := px.leader(view)
+    if target == fdPrevTarget {
+      failed = (target != px.me) && (prevLastPing == px.fdLastPing)
+      if failed {
+      }
+    }
+    fdPrevTarget = target
+    prevLastPing = px.fdLastPing
+    px.fdMu.Unlock()
+    
+    if failed {
+      if view > px.fdInstall {
+        px.Dprintf("***[%v][view=%v] failure! of %v. px.timeout=%v, prevLastPing=%v, px.fdLastPing=%v\n", px.me, view, target, px.timeout, prevLastPing, px.fdLastPing)
+        px.fdOnFail(view)
+        px.fdInstall = view
+      }
+    }
+  }
+}
+
+func (px *Paxos) fdHearFrom(host int) {
+  px.fdMu.Lock()
+  defer px.fdMu.Unlock()
   
-  return inst
+  if host == px.leader(px.view) {
+    px.fdLastPing = time.Now()
+  }
+}
+
+func (px *Paxos) fdOnFail(view int) {
+  if px.view == view {
+    for px.leader(view) != px.me {
+      view += 1
+    }
+    
+    go px.preparer(view)
+  }
 }
 
 //
@@ -529,14 +920,21 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px.peers = peers
   px.me = me
 
-  px.instances = make(map[int]*PaxosInstance)
-  px.max = -1
   px.numPeers = len(peers)
   px.majority = px.numPeers / 2 + 1
+
+  px.view = 0
+  px.instances = make(map[int]*PaxosInstance)
+  px.max = -1
   px.doneVals = make([]int, px.numPeers)
   for i:=0; i<px.numPeers; i++ {
     px.doneVals[i] = -1
   }
+  px.seen = make(map[int]interface{})
+  px.fdLastPing = time.Now()
+  px.fdInstall = -1
+  px.timeout = 100
+  px.aimd = false
 
   if rpcs != nil {
     // caller will create socket &c
@@ -590,5 +988,77 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   }
 
 
+  go px.fdStart();
+
   return px
+}
+
+// args = value, reply = pointer
+//
+// call() sends an RPC to the rpcname handler on server srv
+// with arguments args, waits for the reply, and leaves the
+// reply in reply. the reply argument should be a pointer
+// to a reply structure.
+//
+// the return value is true if the server responded, and false
+// if call() was not able to contact the server. in particular,
+// the replys contents are only valid if call() returned true.
+//
+// you should assume that call() will time out and return an
+// error after a while if it does not get a reply from the server.
+//
+// please use call() to send all RPCs, in client.go and server.go.
+// please do not change this function.
+//
+func call(srv string, name string, args interface{}, reply interface{}) bool {
+  c, err := rpc.Dial("unix", srv)
+  if err != nil {
+    err1 := err.(*net.OpError)
+    if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
+      fmt.Printf("paxos Dial() failed: %v\n", err1)
+    }
+    return false
+  }
+  defer c.Close()
+    
+  err = c.Call(name, args, reply)
+  if err == nil {
+    return true
+  }
+
+  fmt.Println(err)
+  return false
+}
+
+// use function call if srv == me, otherwise use RPC call()
+// also calls freememory
+func (px *Paxos) Call2(srv string, name string, args interface{}, reply interface{}) bool {
+  var err error
+  
+  if srv == px.peers[px.me] {
+    if name == "Paxos.Prepare" {
+      prepareArgs := args.(PrepareArgs)
+      prepareReply := reply.(*PrepareReply)
+      err = px.Prepare(&prepareArgs, prepareReply)
+    } else if name == "Paxos.Accept" {
+      acceptArgs := args.(AcceptArgs)
+      acceptReply := reply.(*AcceptReply)
+      err = px.Accept(&acceptArgs, acceptReply)
+    } else if name == "Paxos.Decided" {
+      decidedArgs := args.(DecidedArgs)
+      decidedReply := reply.(*DecidedReply)
+      err = px.Decided(&decidedArgs, decidedReply)
+    } else {
+      return false
+    }
+    if err == nil {
+      return true
+    }
+
+    fmt.Println(err)
+    return false
+  } else {
+    result := call(srv, name, args, reply)
+    return result
+  }
 }
