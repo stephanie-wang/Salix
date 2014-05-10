@@ -149,11 +149,13 @@ type AcceptReply struct {
 type ProbeArgs struct {
   Seq int
   Me int
+  DoneVal int
 }
 
 type ProbeReply struct {
   Decided bool
   DecidedVal interface{}
+  DoneVal int
 }
 
 type DecidedArgs struct {
@@ -217,6 +219,8 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
+  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+  
   for !px.dead {
     if px.view >= view {
       return
@@ -301,6 +305,8 @@ func (px *Paxos) preparer(view int) {
 }
 
 func (px *Paxos) driver(seq int, v interface{}) {
+  Dprintf("***[%v][view=%v] driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
+  
   inst := px.GetInstance(seq)
   
   for !inst.Decided && !px.dead {   
@@ -324,6 +330,8 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
     v_prime = inst.V_a
   }
   inst.mu.Unlock()
+  
+  //Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
   
   //send Accept to all peers
   numAcceptOks := 0
@@ -383,13 +391,17 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
 }
 
 func (px *Paxos) probe(view int, seq int) {
+  //Dprintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+  
   for i:=0; i<px.numPeers && !px.dead; i++ {
     probeArgs := ProbeArgs{}
     probeArgs.Seq = seq
     probeArgs.Me = px.me
+    probeArgs.DoneVal = px.doneVals[px.me]
     probeReply := ProbeReply{}
     
     if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {
+      px.MergeDoneVals(probeReply.DoneVal, i)
       
       if probeReply.Decided {
         for i:=0; i<px.numPeers && !px.dead; i++ {
@@ -397,6 +409,7 @@ func (px *Paxos) probe(view int, seq int) {
           decidedArgs.Seq = seq
           decidedArgs.V = probeReply.DecidedVal
           decidedArgs.Me = px.me
+          decidedArgs.DoneVal = px.doneVals[px.me]
           decidedReply := DecidedReply{}
           
           if px.Call2(px.peers[i], "Paxos.Decided", decidedArgs, &decidedReply) {
@@ -408,10 +421,11 @@ func (px *Paxos) probe(view int, seq int) {
       }
     }      
   }
-
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+  Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  
   px.fdHearFrom(args.Me)
   
   if args.View >= px.view {
@@ -423,10 +437,10 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     //the highest View_a of an instance
     reply.Accepted = make(map[int]PaxosInstance)
     
-    if args.Me != px.me {
-      px.mu.Lock()
-      defer px.mu.Unlock()
-    }
+    //if args.Me != px.me {
+    //  px.mu.Lock()
+    //  defer px.mu.Unlock()
+    //}
     
     for slot,inst := range px.instances {
       inst.mu.Lock()
@@ -453,20 +467,23 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   
   inst := px.GetInstanceNoLock(args.Seq)
   
-  if args.Me != px.me {
-    px.mu.Lock()
-    defer px.mu.Unlock()
-  }
+  //if args.Me != px.me {
+  //  px.mu.Lock()
+  //  defer px.mu.Unlock()
+  //}
   
   inst.mu.Lock()
 
-  if args.View == px.view {
+  if args.View >= px.view {
+    Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+    
     px.view = args.View
     inst.View_a = args.View
     inst.V_a = args.V
     inst.Accepted = true
     reply.Ok = true
   } else {
+    Dprintf("***[%v][view=%v] rejected onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     reply.Ok = false
   }
   reply.View = px.view
@@ -484,6 +501,8 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     return nil
   }
   
+  //Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  
   px.fdHearFrom(args.Me)
   
   inst := px.GetInstance(args.Seq)
@@ -498,6 +517,23 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 }
 
 func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
+  px.MergeDoneVals(args.DoneVal, args.Me)
+  reply.DoneVal = px.doneVals[px.me]
+
+  if args.Seq < px.Min() {
+    return nil
+  }
+  
+  inst := px.GetInstance(args.Seq)
+
+  inst.mu.Lock()
+  if inst.Decided {
+    reply.Decided = true
+    reply.DecidedVal = inst.DecidedVal
+    Dprintf("***[%v][view=%v] found! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+  }
+  inst.mu.Unlock()
+  
   return nil
 }
 
@@ -692,11 +728,11 @@ func (px *Paxos) fdOnFail(view int) {
     for px.leader(view) != px.me {
       view += 1
     }
-    if px.view >= view { //if new view has been reached already
-      return             //avoid starting new thread
-    }
-    go px.preparer(view)
   }
+  if px.view >= view { //if new view has been reached already
+    return             //avoid starting new thread
+  }
+  go px.preparer(view)
 }
 
 //
