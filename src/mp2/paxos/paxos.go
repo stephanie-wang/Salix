@@ -270,6 +270,8 @@ func (px *Paxos) preparer(view int) {
       
       px.view = view
       
+      //changed := make([]int, 0) //for debugging
+      
       for _, reply := range replies {
         if reply.Accepted != nil {
           for slot, recvd := range reply.Accepted {
@@ -285,6 +287,8 @@ func (px *Paxos) preparer(view int) {
                 inst.Accepted = recvd.Accepted
                 inst.View_a = recvd.View_a
                 inst.V_a = recvd.V_a
+                
+                //changed = append(changed, slot)
               }
             }
             
@@ -292,6 +296,18 @@ func (px *Paxos) preparer(view int) {
           }
         }
       }
+      
+/*
+      for _, slot := range changed {
+        inst := px.GetInstanceNoLock(slot)
+        inst.mu.Lock()
+        //inst.View_a = view  //new view
+        
+        //log.Printf("***[%v][view=%v] highest accept seq=%v, val=%v, view_a=%v preparer(view=%v)\n", px.me, inst.View_a, slot, inst.V_a, px.view, view)
+        
+        inst.mu.Unlock()
+      }
+*/
       
       //start each accepted instance that I didn't know about
       for slot, inst := range px.instances {
@@ -342,7 +358,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
   }
   inst.mu.Unlock()
   
-  //Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
+  //log.Printf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
   
   //send Accept to all peers
   numAcceptOks := 0
@@ -488,7 +504,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   
   inst.mu.Lock()
 
-  if args.View >= px.view {
+  if args.View == px.view {
     Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     
     px.view = args.View
@@ -515,7 +531,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     return nil
   }
   
-  //Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  //log.Printf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   px.fdHearFrom(args.Me)
   
