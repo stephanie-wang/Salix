@@ -31,7 +31,7 @@ import "math/rand"
 import "math"
 import "time"
 
-var Debug int = 0
+var Debug int = 1
 
 func Dprintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -463,6 +463,9 @@ func (px *Paxos) probe(view int, seq int) {
       px.MergeDoneVals(probeReply.DoneVal, i)
       
       if probeReply.Decided {
+        //this increases RPC count too much, left other non-leaders
+        //find out with their own probes
+        /*
         for i:=0; i<px.numPeers && !px.dead; i++ {
           decidedArgs := DecidedArgs{}
           decidedArgs.Seq = seq
@@ -475,6 +478,7 @@ func (px *Paxos) probe(view int, seq int) {
             px.fdHearFrom(i)
           }
         }
+        */
         
         return
       }
@@ -782,12 +786,17 @@ func (px *Paxos) fdHearFrom(host int) {
   px.fdMu.Lock()
   defer px.fdMu.Unlock()
   
+  px.viewMu.Lock()
   if host == px.leader(px.view) {
     px.fdLastPing = time.Now()
   }
+  px.viewMu.Unlock()
 }
 
 func (px *Paxos) fdOnFail(view int) {
+  px.viewMu.Lock()
+  defer px.viewMu.Unlock()
+  
   if px.view == view {
     for px.leader(view) != px.me {
       view += 1
@@ -796,6 +805,7 @@ func (px *Paxos) fdOnFail(view int) {
   if px.view >= view { //if new view has been reached already
     return             //avoid starting new thread
   }
+  
   go px.preparer(view)
 }
 
