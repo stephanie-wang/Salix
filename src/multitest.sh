@@ -1,7 +1,7 @@
 #!/bin/bash
 for i in `seq 1 1000`;
 do
-  #echo -e "\ec\e[3J"	# cls
+  echo -e "\ec\e[3J"	# cls
   echo $i
   echo "-----------------------------------------------------"
   go test $@

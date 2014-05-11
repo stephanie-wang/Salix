@@ -221,13 +221,13 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
-  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
-  
-  //this breaks code
-  //px.mu2.Lock()
-  //defer px.mu2.Unlock()
+  log.Printf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
   
   for !px.dead {
+    //this breaks code
+    //px.mu2.Lock()
+    //defer px.mu2.Unlock()
+  
     if px.view >= view {
       return
     }
@@ -253,7 +253,7 @@ func (px *Paxos) preparer(view int) {
         if prepareReply.Ok {
           numPrepareOks = numPrepareOks + 1
           replies = append(replies, prepareReply)
-        } else if prepareReply.View > px.view {
+        } else if prepareReply.View > px.view {     //TODO: might not be needed
           //someone else became leader
           return;
         }
@@ -313,7 +313,7 @@ func (px *Paxos) preparer(view int) {
       for slot, inst := range px.instances {
         inst.mu.Lock()        
         if (inst.Accepted && !inst.Decided) {
-          go px.Start(slot, inst.V_a)
+          go px.Start(slot, inst.V_a) //TODO: might be a bug
           //do that in thread so I don't have to give up px.mu
         }
         inst.mu.Unlock()
@@ -327,7 +327,7 @@ func (px *Paxos) preparer(view int) {
 }
 
 func (px *Paxos) driver(seq int, v interface{}) {
-  Dprintf("***[%v][view=%v] driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
+  //log.Printf("***[%v][view=%v] driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
   
   inst := px.GetInstance(seq)
   
@@ -352,11 +352,13 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
   
   v_prime := v;
   
+  px.mu.Lock()
   inst.mu.Lock()
   if inst.Accepted {
     v_prime = inst.V_a
   }
   inst.mu.Unlock()
+  px.mu.Unlock()
   
   //log.Printf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
   

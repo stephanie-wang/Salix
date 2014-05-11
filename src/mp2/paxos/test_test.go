@@ -885,7 +885,7 @@ func TestLots(t *testing.T) {
         }
       }
       part(t, tag, npaxos, pa[0], pa[1], pa[2])
-      time.Sleep(time.Duration(rand.Int63() % 200) * time.Millisecond)
+      time.Sleep(time.Duration(rand.Int63() % 20) * time.Millisecond)
     }
   }()
 
