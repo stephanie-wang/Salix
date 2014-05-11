@@ -47,6 +47,7 @@ type Op struct {
   Servers []string // for JOIN
   Scores map[int]int //for POPULARITY
   Num int // for QUERY
+  ID int64 // for QUERY
 }
 
 // updates sm.configs by applying outstanding Ops until
@@ -187,9 +188,9 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"MOVE", GID:args.GID, Shard: args.Shard}
+  op := Op{Type:"MOVE", GID:args.GID, Shard: args.Shard, ID: args.ID}
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.Shard == b.Shard {
+    if a.Type == b.Type && a.Shard == b.Shard && a.ID == b.ID {
       return true
     }
     return false
@@ -207,9 +208,9 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"JOIN", GID:args.GID, Servers:args.Servers}
+  op := Op{Type:"JOIN", GID:args.GID, Servers:args.Servers, ID: args.ID}
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID {
+    if a.Type == b.Type && a.GID == b.GID && a.ID == b.ID{
       return true
     }
     return false
@@ -226,9 +227,9 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"LEAVE", GID: args.GID}
+  op := Op{Type:"LEAVE", GID: args.GID, ID: args.ID}
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID {
+    if a.Type == b.Type && a.GID == b.GID && a.ID == b.ID {
       return true
     }
     return false
@@ -244,10 +245,10 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"QUERY", Num: args.Num}
+  op := Op{Type:"QUERY", Num: args.Num, ID: args.ID}
 
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.Num == b.Num {
+    if a.Type == b.Type && a.Num == b.Num && a.ID == b.ID {
       return true
     }
     return false
@@ -277,10 +278,17 @@ func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type: "POPULARITY", GID:args.Gid, Seq:args.Seq, Scores:args.Popularities, ConfigNum: args.Config}
+  op := Op {
+    Type: "POPULARITY", 
+    GID:args.Gid, 
+    Seq:args.Seq, 
+    Scores:args.Popularities, 
+    ConfigNum: args.Config,
+    ID: args.ID,
+  }
  
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq && a.ConfigNum == b.ConfigNum {
+    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq && a.ConfigNum == b.ConfigNum && a.ID == b.ID{
       return true
     }
     return false
@@ -356,6 +364,7 @@ func (sm *ShardMaster) Fail(){
 func (sm *ShardMaster) Revive(){
   sm.mu.Lock()
   defer sm.mu.Unlock()
+
   sm.restartMemory()
   sm.fail = false
 }

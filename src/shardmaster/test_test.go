@@ -207,10 +207,6 @@ func TestRebalance(t *testing.T){
   }
 
   ck := MakeClerk(kvh)
-  var cka [nservers]*Clerk
-  for i := 0; i < nservers; i++ {
-    cka[i] = MakeClerk([]string{kvh[i]})
-  }
 
   fmt.Printf("Test: Should not rebalance all groups haven't reported ...\n")
 
@@ -591,7 +587,7 @@ func TestFreshQuery(t *testing.T) {
   os.Remove(portx)
 }
 
-func TestPersistance(t *testing.T) {
+func TestPersistence(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
   const nservers = 3
@@ -607,54 +603,43 @@ func TestPersistance(t *testing.T) {
   }
 
   ck := MakeClerk(kvh)
-  var cka [nservers]*Clerk
-  for i := 0; i < nservers; i++ {
-    cka[i] = MakeClerk([]string{kvh[i]})
-  }
 
-  fmt.Printf("Test: Basic Persistance ...\n")
-
-  cfa := make([]Config, 6)
-  cfa[0] = ck.Query(-1)
-
-  check(t, []int64{}, ck)
+  fmt.Printf("Test: Fails & revives immediately ...\n")
 
   var gid1 int64 = 1
   ck.Join(gid1, []string{"x", "y", "z"})
-  check(t, []int64{gid1}, ck)
-  cfa[1] = ck.Query(-1)
 
   var gid2 int64 = 2
   ck.Join(gid2, []string{"a", "b", "c"})
-  check(t, []int64{gid1,gid2}, ck)
-  cfa[2] = ck.Query(-1)
 
-  ck.Join(gid2, []string{"a", "b", "c"})
-  check(t, []int64{gid1,gid2}, ck)
-  cfa[3] = ck.Query(-1)
+  before := ck.Query(-1).Num
 
-  cfx := ck.Query(-1)
-  sa1 := cfx.Groups[gid1]
+  sma[0].Fail()
+  sma[0].Revive()
+
+  after := ck.Query(-1).Num
+
+  if before != after {
+    t.Fatalf("Not persistent. Expected config %v but got config %v", before, after)
+  }
+
+  fmt.Printf("  ... Passed\n")
+  
+  fmt.Printf("Test: Fails and revives later ... \n")
 
   sma[0].Fail()
   
+  var gid3 int64 = 3
+  ck.Join(gid3, []string{"d", "e", "f"})
 
-  if len(sa1) != 3 || sa1[0] != "x" || sa1[1] != "y" || sa1[2] != "z" {
-    t.Fatal("wrong servers for gid %v: %v\n", gid1, sa1)
-  }
-  sa2 := cfx.Groups[gid2]
-  if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
-    t.Fatal("wrong servers for gid %v: %v\n", gid2, sa2)
-  }
-
-  ck.Leave(gid1)
-  check(t, []int64{gid2}, ck)
   sma[0].Revive()
-  cfa[4] = ck.Query(-1)
 
-  ck.Leave(gid1)
-  check(t, []int64{gid2}, ck)
-  cfa[5] = ck.Query(-1)
+  after = ck.Query(-1).Num
+
+  if after != before+1 {
+    t.Fatalf("Not persistent. Expected new config %v but got config %v", before+1, after)
+  }
 
   fmt.Printf("  ... Passed\n")
+  
 }
