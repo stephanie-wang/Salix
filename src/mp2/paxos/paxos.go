@@ -50,7 +50,7 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-var FAILURE_DETECTOR_TO = 200  //ms
+var FAILURE_DETECTOR_TO = 100  //ms
 
 type Paxos struct {
   mu sync.Mutex
@@ -178,6 +178,10 @@ func (px *Paxos) GetInstance(seq int) *PaxosInstance {
   px.dataMu.Lock()
   defer px.dataMu.Unlock()
 
+  return px.GetInstanceNoLock(seq)
+}
+
+func (px *Paxos) GetInstanceNoLock(seq int) *PaxosInstance {
   _, ok := px.instances[seq]
   if !ok {
     px.instances[seq] = MakeInstance()
@@ -200,9 +204,12 @@ func (px *Paxos) leader(view int) int {
 }
 
 func (px *Paxos) lowestUndecided() int {
-  slot := 0
+  px.dataMu.Lock()
+  defer px.dataMu.Unlock()
+  
+  slot := px.doneVals[px.me] + 1
   for !px.dead {
-    inst := px.GetInstance(slot)
+    inst := px.GetInstanceNoLock(slot)
     inst.mu.Lock()
     x := inst.Decided
     inst.mu.Unlock()
@@ -265,11 +272,11 @@ func (px *Paxos) preparer_iteration(view int) bool {
       if prepareReply.Ok {
         numPrepareOks = numPrepareOks + 1
         replies = append(replies, prepareReply)
-      } else if prepareReply.View > px.view {     //TODO: might not be needed
+      } /* else if prepareReply.View > px.view {     //TODO: might not be needed
         //someone else became leader
         Dprintf("***[%v][view=%v] other-leader preparer(view=%v)\n", px.me, px.view, view)
         return false
-      }
+      } */
     }
     
     //abort early if enough oks or too many rejects/failures
@@ -590,7 +597,7 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
 // is reached.
 //
 
-func (px *Paxos) Start(seq int, v interface{}) int {
+func (px *Paxos) Start(seq int, v interface{}) {
   px.startMu.Lock()
   defer px.startMu.Unlock()
   
@@ -603,8 +610,6 @@ func (px *Paxos) Start(seq int, v interface{}) int {
     px.started[seq] = true
     go px.driver(seq, v)
   }
-  
-  return px.leader(px.view)
 }
 
 func (px *Paxos) FreeMemory(keepAtLeast int) {

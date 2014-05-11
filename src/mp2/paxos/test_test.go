@@ -1,15 +1,3 @@
-/*
-
-TODO: TestLots
---- FAIL: TestLots (25.13 seconds)
-        test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
-        test_test.go:35: decided values do not match; seq=12 i=3 v=1 v1=0
-        test_test.go:35: decided values do not match; seq=4 i=2 v=9 v1=5
-
-cd ~/6.824/Salix/src/mp/paxos/ ; ../../multitest.sh -run TestLots       
-cls;  ../../multitest.sh -run TestLots 2>&1 | grep -v unexpected | grep -v connection | grep -v write
-*/
-
 package paxos
 
 import "testing"
@@ -19,7 +7,6 @@ import "os"
 import "time"
 import "fmt"
 import "math/rand"
-import "log"
 
 var PrintNdecided int = 0
 
@@ -49,14 +36,14 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
         v = v1
       } else {
         if PrintNdecided > 0 {
-          log.Printf("***[t] ndecided(seq=%v) not decided: %v\n", seq, i)
+          fmt.Printf("***[t] ndecided(seq=%v) not decided: %v\n", seq, i)
         }
       }
     }
   }
   
   if PrintNdecided > 0 {
-    log.Printf("***[t] ndecided(seq=%v) = %v\n", seq, count)
+    fmt.Printf("***[t] ndecided(seq=%v) = %v\n", seq, count)
   }
   
   return count
@@ -64,7 +51,6 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
 
 func waitn(t *testing.T, pxa[]*Paxos, seq int, wanted int) {
   to := 10 * time.Millisecond
-  fmt.Println("waitn start:", seq)
   for iters := 0; iters < 30; iters++ {
     if ndecided(t, pxa, seq) >= wanted {
       break
@@ -78,7 +64,6 @@ func waitn(t *testing.T, pxa[]*Paxos, seq int, wanted int) {
   if nd < wanted {
     t.Fatalf("too few decided; seq=%v ndecided=%v wanted=%v", seq, nd, wanted)
   }
-  fmt.Println("waitn end:", seq)
 }
 
 func waitmajority(t *testing.T, pxa[]*Paxos, seq int) {
@@ -94,56 +79,11 @@ func checkmax(t *testing.T, pxa[]*Paxos, seq int, max int) {
 }
 
 func cleanup(pxa []*Paxos) {
-  fmt.Println("******************** CLEANUP *********************")
   for i := 0; i < len(pxa); i++ {
     if pxa[i] != nil {
       pxa[i].Kill()
     }
   }
-}
-
-func startByClient(server int, pxa[]*Paxos, seq int, v interface{}) {
-  go func() {
-    leader := server
-    for true {
-      //fmt.Println("starting", server, seq, v);
-      
-      for pxa[leader] == nil {
-        //select a new leader
-        leader = (leader + 1) % len(pxa)
-      }
-      
-      leader = pxa[leader].Start(seq, v)
-      ok, _ := pxa[server].Status(seq)
-      if ok {
-        //fmt.Printf("*** [t] done startByClient(seq=%d)\n", seq)
-        break
-      }
-      time.Sleep(1 * time.Millisecond)
-    }
-  }()
-}
-
-func startByClientWithDeafServers(server int, pxa[]*Paxos, seq int, v interface{}, deaf []bool) {
-  go func() {
-    leader := server
-    for true {
-      //fmt.Println("starting", server, seq, v);
-      
-      for deaf[leader] || pxa[leader] == nil {
-        //select a new leader
-        leader = (leader + 1) % len(pxa)
-      }
-      
-      leader = pxa[leader].Start(seq, v)
-      ok, _ := pxa[server].Status(seq)
-      if ok {
-        fmt.Printf("*** [t] done startByClient(seq=%d)\n", seq)
-        break
-      }
-      time.Sleep(1 * time.Millisecond)
-    }
-  }()
 }
 
 func noTestSpeed(t *testing.T) {
@@ -164,7 +104,7 @@ func noTestSpeed(t *testing.T) {
   t0 := time.Now()
 
   for i := 0; i < 20; i++ {
-    startByClient(0, pxa, i, "x")
+    pxa[0].Start(i, "x")
     waitn(t, pxa, i, npaxos)
   }
 
@@ -173,11 +113,7 @@ func noTestSpeed(t *testing.T) {
 }
 
 func TestBasic(t *testing.T) {
-  //t.Fatalf("crash!")
-
   runtime.GOMAXPROCS(4)
-
-//Debug = 1
 
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -193,8 +129,7 @@ func TestBasic(t *testing.T) {
 
   fmt.Printf("Test: Single proposer ...\n")
 
-  startByClient(0, pxa, 0, "hello")
-
+  pxa[0].Start(0, "hello")
   waitn(t, pxa, 0, npaxos)
 
   fmt.Printf("  ... Passed 1\n")
@@ -202,7 +137,7 @@ func TestBasic(t *testing.T) {
   fmt.Printf("Test: Many proposers, same value ...\n")
 
   for i := 0; i < npaxos; i++ {
-    startByClient(i, pxa, 1, 77)
+    pxa[i].Start(1, 77)
   }
   waitn(t, pxa, 1, npaxos)
 
@@ -210,102 +145,38 @@ func TestBasic(t *testing.T) {
 
   fmt.Printf("Test: Many proposers, different values ...\n")
 
-  startByClient(0, pxa, 2, 100)
-  startByClient(1, pxa, 2, 101)
-  startByClient(2, pxa, 2, 102)
-  
+  pxa[0].Start(2, 100)
+  pxa[1].Start(2, 101)
+  pxa[2].Start(2, 102)
   waitn(t, pxa, 2, npaxos)
 
   fmt.Printf("  ... Passed 3\n")
 
   fmt.Printf("Test: Out-of-order instances ...\n")
 
-  startByClient(0, pxa, 7, 700)
-  startByClient(0, pxa, 6, 600)
-  startByClient(1, pxa, 5, 500)
+  pxa[0].Start(7, 700)
+  pxa[0].Start(6, 600)
+  pxa[1].Start(5, 500)
   waitn(t, pxa, 7, npaxos)
-  startByClient(0, pxa, 4, 400)
-  startByClient(1, pxa, 3, 300)
+  pxa[0].Start(4, 400)
+  pxa[1].Start(3, 300)
   waitn(t, pxa, 6, npaxos)
   waitn(t, pxa, 5, npaxos)
   waitn(t, pxa, 4, npaxos)
   waitn(t, pxa, 3, npaxos)
 
   if pxa[0].Max() != 7 {
-    t.Fatalf("wrong Max(): %d", pxa[0].Max())
+    t.Fatalf("wrong Max()")
   }
 
   fmt.Printf("  ... Passed 4\n")
 }
 
-//TestDeaf: works with multi-paxos.
-//If leader becomes deaf, it should elect leader to serve the start()
-
 // This test is no longer needed.
 // Depending on failure detector's timeouts,
 // deaf node may initiate comms before socket is dead...?
 
-func TestDeaf(t *testing.T) {
-  return//
-
-  //Debug = 1
-
-  runtime.GOMAXPROCS(4)
-
-  const npaxos = 5
-  var pxa []*Paxos = make([]*Paxos, npaxos)
-  var pxh []string = make([]string, npaxos)
-  defer cleanup(pxa)
-
-  for i := 0; i < npaxos; i++ {
-    pxh[i] = port("deaf", i)
-  }
-  for i := 0; i < npaxos; i++ {
-    pxa[i] = Make(pxh, i, nil)
-  }
-
-  fmt.Printf("Test: Deaf proposer ...\n")
-
-  startByClient(0, pxa, 0, "hello")
-  waitn(t, pxa, 0, npaxos)
-
-  deaf := make([]bool, npaxos)
-  deaf[0] = true
-  deaf[npaxos-1] = true
-  os.Remove(pxh[0])
-  os.Remove(pxh[npaxos-1])
-
-  Debug = 0
-
-  fmt.Println("------------------------------------------")
-  startByClientWithDeafServers(1, pxa, 1, "goodbye", deaf)
-  waitmajority(t, pxa, 1)
-
-  time.Sleep(1 * time.Second)
-  if ndecided(t, pxa, 1) != npaxos - 2 {
-    t.Fatalf("a deaf peer heard about a decision")
-  }
-
-return
-
-  deaf[0] = false;
-  startByClientWithDeafServers(0, pxa, 1, "xxx", deaf)
-  waitn(t, pxa, 1, npaxos-1)
-
-  time.Sleep(1 * time.Second)
-  if ndecided(t, pxa, 1) != npaxos - 1 {
-    t.Fatalf("a deaf peer heard about a decision")
-  }
-
-  startByClient(npaxos-1, pxa, 1, "yyy")
-  waitn(t, pxa, 1, npaxos)
-
-  fmt.Printf("  ... Passed 5\n")
-}
-
 func TestForget(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   const npaxos = 6
@@ -330,11 +201,11 @@ func TestForget(t *testing.T) {
     }
   }
 
-  startByClient(0, pxa, 0, "00")
-  startByClient(1, pxa, 1, "11")
-  startByClient(2, pxa, 2, "22")
-  startByClient(0, pxa, 6, "66")
-  startByClient(1, pxa, 7, "77")
+  pxa[0].Start(0, "00")
+  pxa[1].Start(1, "11")
+  pxa[2].Start(2, "22")
+  pxa[0].Start(6, "66")
+  pxa[1].Start(7, "77")
 
   waitn(t, pxa, 0, npaxos)
 
@@ -364,16 +235,13 @@ func TestForget(t *testing.T) {
     pxa[i].Done(1)
   }
   for i := 0; i < npaxos; i++ {
-    startByClient(i, pxa, 8 + i, "xx")
-    waitn(t, pxa, 8 + i, npaxos)
+    pxa[i].Start(8 + i, "xx")
   }
-  
   allok := false
   for iters := 0; iters < 12; iters++ {
     allok = true
     for i := 0; i < npaxos; i++ {
       s := pxa[i].Min()
-      fmt.Println(s)
       if s != 1 {
         allok = false
       }
@@ -394,8 +262,6 @@ func TestForget(t *testing.T) {
 // does paxos forgetting actually free the memory?
 //
 func TestForgetMem(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Paxos frees forgotten instance memory ...\n")
@@ -412,7 +278,7 @@ func TestForgetMem(t *testing.T) {
     pxa[i] = Make(pxh, i, nil)
   }
 
-  startByClient(0, pxa, 0, "x")
+  pxa[0].Start(0, "x")
   waitn(t, pxa, 0, npaxos)
 
   runtime.GC()
@@ -425,7 +291,7 @@ func TestForgetMem(t *testing.T) {
     for j := 0; j < len(big); j++ {
       big[j] = byte('a' + rand.Int() % 26)
     }
-    startByClient(0, pxa, i, string(big))
+    pxa[0].Start(i, string(big))
     waitn(t, pxa, i, npaxos)
   }
 
@@ -438,7 +304,7 @@ func TestForgetMem(t *testing.T) {
     pxa[i].Done(10)
   }
   for i := 0; i < npaxos; i++ {
-    startByClient(i, pxa, 11 + i, "z")
+    pxa[i].Start(11 + i, "z")
   }
   time.Sleep(3 * time.Second)
   for i := 0; i < npaxos; i++ {
@@ -460,8 +326,6 @@ func TestForgetMem(t *testing.T) {
 }
 
 func TestRPCCount(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: RPC counts aren't too high ...\n")
@@ -481,7 +345,7 @@ func TestRPCCount(t *testing.T) {
   ninst1 := 5
   seq := 0
   for i := 0; i < ninst1; i++ {
-    startByClient(0, pxa, seq, "x")
+    pxa[0].Start(seq, "x")
     waitn(t, pxa, seq, npaxos)
     seq++
   }
@@ -537,8 +401,6 @@ func TestRPCCount(t *testing.T) {
 // many agreements (without failures)
 //
 func TestMany(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Many instances ...\n")
@@ -546,14 +408,14 @@ func TestMany(t *testing.T) {
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
   var pxh []string = make([]string, npaxos)
-  //defer cleanup(pxa)
+  defer cleanup(pxa)
 
   for i := 0; i < npaxos; i++ {
     pxh[i] = port("many", i)
   }
   for i := 0; i < npaxos; i++ {
     pxa[i] = Make(pxh, i, nil)
-    startByClient(i, pxa, 0, 0)
+    pxa[i].Start(0, 0)
   }
 
   const ninst = 50
@@ -564,7 +426,7 @@ func TestMany(t *testing.T) {
       time.Sleep(20 * time.Millisecond)
     }
     for i := 0; i < npaxos; i++ {
-      startByClient(i, pxa, seq, (seq * 10) + i)
+      pxa[i].Start(seq, (seq * 10) + i)
     }
   }
 
@@ -589,8 +451,6 @@ func TestMany(t *testing.T) {
 // then another peer starts, without a proposal.
 // 
 func TestOld(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Minority proposal ignored ...\n")
@@ -607,11 +467,12 @@ func TestOld(t *testing.T) {
   pxa[1] = Make(pxh, 1, nil)
   pxa[2] = Make(pxh, 2, nil)
   pxa[3] = Make(pxh, 3, nil)
-  startByClient(1, pxa, 1, 111)
+  pxa[1].Start(1, 111)
+
   waitmajority(t, pxa, 1)
 
   pxa[0] = Make(pxh, 0, nil)
-  startByClient(0, pxa, 1, 222)
+  pxa[0].Start(1, 222)
 
   waitn(t, pxa, 1, 4)
 
@@ -627,8 +488,6 @@ func TestOld(t *testing.T) {
 // many agreements, with unreliable RPC
 //
 func TestManyUnreliable(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Many instances, unreliable RPC ...\n")
@@ -644,7 +503,7 @@ func TestManyUnreliable(t *testing.T) {
   for i := 0; i < npaxos; i++ {
     pxa[i] = Make(pxh, i, nil)
     pxa[i].unreliable = true
-    startByClient(i, pxa, 0, 0)
+    pxa[i].Start(0, 0)
   }
 
   const ninst = 50
@@ -655,7 +514,7 @@ func TestManyUnreliable(t *testing.T) {
       time.Sleep(20 * time.Millisecond)
     }
     for i := 0; i < npaxos; i++ {
-      startByClient(i, pxa, seq, (seq * 10) + i)
+      pxa[i].Start(seq, (seq * 10) + i)
     }
   }
 
@@ -717,8 +576,6 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
 }
 
 func TestPartition(t *testing.T) {
-  //return//
-
   runtime.GOMAXPROCS(4)
 
   tag := "partition"
@@ -741,35 +598,27 @@ func TestPartition(t *testing.T) {
   defer part(t, tag, npaxos, []int{}, []int{}, []int{})
 
   seq := 0
-  
-  
-  //time.Sleep(10000*time.Millisecond)
 
   fmt.Printf("Test: No decision if partitioned ...\n")
 
   part(t, tag, npaxos, []int{0,2}, []int{1,3}, []int{4})
-  startByClient(1, pxa, seq, 111)
+  pxa[1].Start(seq, 111)
   checkmax(t, pxa, seq, 0)
-
-  fmt.Printf("  ... Passed 12\n")
+  
+  fmt.Printf("  ... Passed\n")
 
   fmt.Printf("Test: Decision in majority partition ...\n")
 
-  //Debug = 0
-
   part(t, tag, npaxos, []int{0}, []int{1,2,3}, []int{4})
   time.Sleep(2 * time.Second)
-  
   waitmajority(t, pxa, seq)
 
   fmt.Printf("  ... Passed 13\n")
 
-
-
   fmt.Printf("Test: All agree after full heal ...\n")
 
-  startByClient(0, pxa, seq, 1000) // poke them
-  startByClient(4, pxa, seq, 1004)
+  pxa[0].Start(seq, 1000) // poke them
+  pxa[4].Start(seq, 1004)
   part(t, tag, npaxos, []int{0,1,2,3,4}, []int{}, []int{})
 
   waitn(t, pxa, seq, npaxos)
@@ -778,26 +627,16 @@ func TestPartition(t *testing.T) {
 
   fmt.Printf("Test: One peer switches partitions ...\n")
 
-  fmt.Println("-----------------------------------------")
-  
-
-  //DPrintf("kobe")
-
-  Debug = 0
-  PrintNdecided = 0
-
   for iters := 0; iters < 20; iters++ {
     seq++
 
     part(t, tag, npaxos, []int{0,1,2}, []int{3,4}, []int{})
-    startByClient(0, pxa, seq, seq * 10)
-    startByClient(3, pxa, seq, (seq * 10) + 1)
+    pxa[0].Start(seq, seq * 10)
+    pxa[3].Start(seq, (seq * 10) + 1)
     waitmajority(t, pxa, seq)
     if ndecided(t, pxa, seq) > 3 {
       t.Fatalf("too many decided")
     }
-
-    fmt.Println("*******************************************")
     
     part(t, tag, npaxos, []int{0,1}, []int{2,3,4}, []int{})
     waitn(t, pxa, seq, npaxos)
@@ -817,7 +656,7 @@ func TestPartition(t *testing.T) {
 
     part(t, tag, npaxos, []int{0,1,2}, []int{3,4}, []int{})
     for i := 0; i < npaxos; i++ {
-      startByClient(i, pxa, seq, (seq * 10) + i)
+      pxa[i].Start(seq, (seq * 10) + i)
     }
     waitn(t, pxa, seq, 3)
     if ndecided(t, pxa, seq) > 3 {
@@ -837,10 +676,6 @@ func TestPartition(t *testing.T) {
 }
 
 func TestLots(t *testing.T) {
-  //return//
-
-  Debug = 0
-
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Many requests, changing partitions ...\n")
@@ -886,7 +721,7 @@ func TestLots(t *testing.T) {
         }
       }
       part(t, tag, npaxos, pa[0], pa[1], pa[2])
-      time.Sleep(time.Duration(rand.Int63() % 20) * time.Millisecond)
+      time.Sleep(time.Duration(rand.Int63() % 200) * time.Millisecond)
     }
   }()
 
@@ -906,7 +741,7 @@ func TestLots(t *testing.T) {
       }
       if seq - nd < 10 {
         for i := 0; i < npaxos; i++ {
-          startByClient(i, pxa, seq, rand.Int() % 10)
+          pxa[i].Start(seq, rand.Int() % 10)
         }
         seq++
       }
