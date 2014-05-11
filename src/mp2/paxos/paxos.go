@@ -31,7 +31,7 @@ import "math/rand"
 import "math"
 import "time"
 
-var Debug int = 1
+var Debug int = 0
 
 func Dprintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -40,7 +40,7 @@ func Dprintf(format string, a ...interface{}) (n int, err error) {
   return
 }
 
-var PrintFullVal bool = false
+var PrintFullVal bool = true
 
 func valStr(v interface{}) interface{} {
   if PrintFullVal {
@@ -80,6 +80,7 @@ type Paxos struct {
   //failure detection
   fdMu sync.Mutex
   fdLastPing time.Time
+  fdInstalledView int
 }
 
 func InitPx(px *Paxos) {
@@ -97,6 +98,7 @@ func InitPx(px *Paxos) {
   px.started = make(map[int]bool)
   
   px.fdLastPing = time.Now()
+  px.fdInstalledView = -1
 }
 
 type PaxosInstance struct {
@@ -224,13 +226,17 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
-  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+//  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
 
   for !px.dead {
     
-    px.mu.Lock()
+    if px.view >= view {
+      break
+    }
+    
+    //px.mu.Lock()
     x := px.preparer_iteration(view)
-    px.mu.Unlock()
+    //px.mu.Unlock()
     if !x {
       break
     }
@@ -239,6 +245,8 @@ func (px *Paxos) preparer(view int) {
 
 //returns true for continue
 func (px *Paxos) preparer_iteration(view int) bool {
+//Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
+
   //this breaks code
   //px.mu2.Lock()
   //defer px.mu2.Unlock()
@@ -271,10 +279,11 @@ func (px *Paxos) preparer_iteration(view int) bool {
       if prepareReply.Ok {
         numPrepareOks = numPrepareOks + 1
         replies = append(replies, prepareReply)
-      } /* else if prepareReply.View > px.view {     //TODO: might not be needed
+      } //else {
+      //if prepareReply.View > px.view {     //TODO: might not be needed
         //someone else became leader
-        return false
-      } */
+       // return false
+      //}
     }
     
     //abort early if enough oks or too many rejects/failures
@@ -463,9 +472,7 @@ func (px *Paxos) probe(view int, seq int) {
       px.MergeDoneVals(probeReply.DoneVal, i)
       
       if probeReply.Decided {
-        //this increases RPC count too much, left other non-leaders
-        //find out with their own probes
-        /*
+
         for i:=0; i<px.numPeers && !px.dead; i++ {
           decidedArgs := DecidedArgs{}
           decidedArgs.Seq = seq
@@ -478,7 +485,6 @@ func (px *Paxos) probe(view int, seq int) {
             px.fdHearFrom(i)
           }
         }
-        */
         
         return
       }
@@ -488,11 +494,11 @@ func (px *Paxos) probe(view int, seq int) {
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 
-  //Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
   
   px.fdHearFrom(args.Me)
   
-  px.dataMu.Lock()
+  px.viewMu.Lock()
   
   if args.View >= px.view {
     if args.Me != px.me {
@@ -503,6 +509,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     //the highest View_a of an instance
     reply.Accepted = make(map[int]PaxosInstance)
     
+    px.dataMu.Lock()
     for slot,inst := range px.instances {
       inst.mu.Lock()
       if slot >= args.LowestUndecided && inst.Accepted {
@@ -510,6 +517,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
       }
       inst.mu.Unlock()
     }
+    px.dataMu.Unlock()
     
     reply.Ok = true
   } else {
@@ -517,7 +525,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
   }
   reply.View = px.view
   
-  px.dataMu.Unlock()
+  px.viewMu.Unlock()
   
   return nil
 }
@@ -544,7 +552,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   
   px.viewMu.Lock()
   if args.View >= px.view {
-    //Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+    Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     inst := px.GetInstance(args.Seq)
     inst.mu.Lock()
     
@@ -556,7 +564,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     
     inst.mu.Unlock()
   } else {
-    //Dprintf("***[%v][view=%v] rejected onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+    Dprintf("***[%v][view=%v] rejected onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     reply.Ok = false
   }
   reply.View = px.view
@@ -754,7 +762,6 @@ func (px *Paxos) Kill() {
 
 func (px *Paxos) fdThread() {
   fdPrevTarget := -1
-  fdInstalledView := -1
   var prevLastPing time.Time
   
   for !px.dead {
@@ -774,9 +781,8 @@ func (px *Paxos) fdThread() {
     
     if failure {
       //avoid calling fdOnFail multiple times for same view #
-      if view > fdInstalledView {
+      if view > px.fdInstalledView {
         px.fdOnFail(view)
-        fdInstalledView = view
       }
     }
   }
@@ -795,7 +801,6 @@ func (px *Paxos) fdHearFrom(host int) {
 
 func (px *Paxos) fdOnFail(view int) {
   px.viewMu.Lock()
-  defer px.viewMu.Unlock()
   
   if px.view == view {
     for px.leader(view) != px.me {
@@ -803,9 +808,12 @@ func (px *Paxos) fdOnFail(view int) {
     }
   }
   if px.view >= view { //if new view has been reached already
+    px.viewMu.Unlock()
     return             //avoid starting new thread
   }
   
+  px.viewMu.Unlock()
+  px.fdInstalledView = view
   go px.preparer(view)
 }
 

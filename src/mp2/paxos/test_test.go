@@ -605,7 +605,7 @@ func TestPartition(t *testing.T) {
   pxa[1].Start(seq, 111)
   checkmax(t, pxa, seq, 0)
   
-  fmt.Printf("  ... Passed\n")
+  fmt.Printf("  ... Passed 12\n")
 
   fmt.Printf("Test: Decision in majority partition ...\n")
 
