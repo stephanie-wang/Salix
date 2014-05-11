@@ -73,7 +73,7 @@ type Paxos struct {
   doneVals []int  //done vals for each peer
 
   //duplicate detection for Start()
-  started map[int]bool
+  started map[int]interface{}
   startMu sync.Mutex
 
   //failure detection
@@ -93,7 +93,7 @@ func InitPx(px *Paxos) {
     px.doneVals[i] = -1
   }
   
-  px.started = make(map[int]bool)
+  px.started = make(map[int]interface{})
   
   px.fdLastPing = time.Now()
 }
@@ -603,7 +603,7 @@ func (px *Paxos) Start(seq int, v interface{}) {
   
   _, ok := px.started[seq]
   if !ok {
-    px.started[seq] = true
+    px.started[seq] = v
     go px.driver(seq, v)
   }
 }

@@ -174,6 +174,7 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
 
   // write the stuff to log
   // do it BEFORE actually making changes to memory (WAL)
+
   sm.writeConfig(newConfig)
   newLatestHeard := make(map[int64]int)
   sm.writeScores(sm.scores, newLatestHeard)
