@@ -169,8 +169,6 @@ func (kv *ShardKV) doOp(seq int) bool {
       return true
     }
 
-    kv.fileMu.Lock()
-    defer kv.fileMu.Unlock()
 
     kv.initShardMap(shard)
     var reply Reply
@@ -343,6 +341,9 @@ func (kv *ShardKV) getMissingFiles(root string, files []string) []string {
 }
 
 func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (int, Err) {
+  kv.fileMu.Lock()
+  defer kv.fileMu.Unlock()
+
   shard := key2shard(filename)
   kv.popularityMu.Lock()
   if stale {
@@ -367,6 +368,9 @@ func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (i
 
 
 func (kv *ShardKV) write(filename string, buf []byte) (int, Err) {
+  kv.fileMu.Lock()
+  defer kv.fileMu.Unlock()
+
   shard := key2shard(filename)
   kv.popularityMu.Lock()
   kv.popularities[shard].writes++
@@ -687,12 +691,12 @@ func (kv *ShardKV) tick() {
 }
 
 func (kv *ShardKV) popularityPing() {
+  kv.mu.Lock()
+  defer kv.mu.Unlock()
   kv.popularityMu.Lock()
   defer kv.popularityMu.Unlock()
   // don't allow reconfigs during a ping
   // is this safe from deadlock?
-  kv.mu.Lock()
-  defer kv.mu.Unlock()
 
   popularities := make(map[int]int)
   for shard, gid := range kv.config.Shards {
