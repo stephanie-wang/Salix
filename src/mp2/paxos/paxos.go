@@ -40,7 +40,7 @@ func Dprintf(format string, a ...interface{}) (n int, err error) {
   return
 }
 
-var PrintFullVal bool = true
+var PrintFullVal bool = false
 
 func valStr(v interface{}) interface{} {
   if PrintFullVal {
@@ -66,6 +66,7 @@ type Paxos struct {
 
   mu2 sync.RWMutex  //used to make sure no proposals during election?
   
+  viewMu sync.Mutex
   dataMu sync.Mutex
   view int
   instances map[int]*PaxosInstance  //Paxos instances
@@ -339,7 +340,9 @@ func (px *Paxos) preparer_iteration(view int) bool {
     }
     px.dataMu.Unlock()
     
+    px.viewMu.Lock()  //if other code locks with this, they will see most recent number
     px.view = view
+    px.viewMu.Unlock()
     
     //px.mu.Unlock()
     
@@ -410,7 +413,9 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
     }
 
     if acceptReply.View > view {  //if other nodes have moved on
+      px.viewMu.Lock()
       px.view = acceptReply.View  //also move on
+      px.viewMu.Unlock()
       return
     }
     
@@ -458,6 +463,9 @@ func (px *Paxos) probe(view int, seq int) {
       px.MergeDoneVals(probeReply.DoneVal, i)
       
       if probeReply.Decided {
+        //this increases RPC count too much, left other non-leaders
+        //find out with their own probes
+        /*
         for i:=0; i<px.numPeers && !px.dead; i++ {
           decidedArgs := DecidedArgs{}
           decidedArgs.Seq = seq
@@ -470,6 +478,7 @@ func (px *Paxos) probe(view int, seq int) {
             px.fdHearFrom(i)
           }
         }
+        */
         
         return
       }
@@ -483,6 +492,8 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
   
   px.fdHearFrom(args.Me)
   
+  px.dataMu.Lock()
+  
   if args.View >= px.view {
     if args.Me != px.me {
       px.view = args.View
@@ -492,7 +503,6 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     //the highest View_a of an instance
     reply.Accepted = make(map[int]PaxosInstance)
     
-    px.dataMu.Lock()
     for slot,inst := range px.instances {
       inst.mu.Lock()
       if slot >= args.LowestUndecided && inst.Accepted {
@@ -500,13 +510,14 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
       }
       inst.mu.Unlock()
     }
-    px.dataMu.Unlock()
     
     reply.Ok = true
   } else {
     reply.Ok = false;
   }
   reply.View = px.view
+  
+  px.dataMu.Unlock()
   
   return nil
 }
@@ -518,26 +529,39 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   
   px.fdHearFrom(args.Me)
   
-  inst := px.GetInstance(args.Seq)
+  //5 peers
+  //0 goes to 65, hears nothing about seq=55
+  //THEN 2,3,4 accept something for seq=55 at view 63
+  //if that was true, 0 shoulda heard about it
+  //the px.view must be stale in 2,3,4
+  //solution: add lock here
+  //also, px.view might be stale in Prepare() RPC
+  //which might cause px.view to go down
+  //px.view used to be N_p which was inside inst
+  //that's why didn't have to lock before
+  //doing it with px.mu will deadlock
+  //solution: create a viewMu just for reading/updating mu?
   
-  inst.mu.Lock()
-
-  if args.View == px.view {
+  px.viewMu.Lock()
+  if args.View >= px.view {
     //Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+    inst := px.GetInstance(args.Seq)
+    inst.mu.Lock()
     
     px.view = args.View
     inst.View_a = args.View
     inst.V_a = args.V
     inst.Accepted = true
     reply.Ok = true
+    
+    inst.mu.Unlock()
   } else {
     //Dprintf("***[%v][view=%v] rejected onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     reply.Ok = false
   }
   reply.View = px.view
+  px.viewMu.Unlock()
 
-  inst.mu.Unlock()
-  
   return nil;
 }
 
@@ -762,12 +786,17 @@ func (px *Paxos) fdHearFrom(host int) {
   px.fdMu.Lock()
   defer px.fdMu.Unlock()
   
+  px.viewMu.Lock()
   if host == px.leader(px.view) {
     px.fdLastPing = time.Now()
   }
+  px.viewMu.Unlock()
 }
 
 func (px *Paxos) fdOnFail(view int) {
+  px.viewMu.Lock()
+  defer px.viewMu.Unlock()
+  
   if px.view == view {
     for px.leader(view) != px.me {
       view += 1
@@ -776,6 +805,7 @@ func (px *Paxos) fdOnFail(view int) {
   if px.view >= view { //if new view has been reached already
     return             //avoid starting new thread
   }
+  
   go px.preparer(view)
 }
 

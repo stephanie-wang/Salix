@@ -220,12 +220,12 @@ func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (i
   f, err := os.Open(kv.getFilepath(filename))
   defer f.Close()
   if err != nil {
-    return 0, Err(err.Error())
+    return 0, ErrNoKey
   }
 
   n, err := f.ReadAt(buf, off)
   if err != nil {
-    return n, Err(err.Error())
+    return n, ErrNoKey
   }
   return n, ""
 }
@@ -254,12 +254,12 @@ func (kv *ShardKV) write(filename string, buf []byte, doAppend bool) (int, Err) 
     f, err = os.Create(kv.getFilepath(filename))
   }
   if err != nil {
-    return 0, Err(err.Error())
+    return 0, ErrNoKey
   }
 
   n, err := f.Write(buf)
   if err != nil {
-    return n, Err(err.Error())
+    return n, ErrNoKey
   }
 
   f2, _ := os.Open(kv.getFilepath(filename))
@@ -847,7 +847,7 @@ func (kv *ShardKV) proposeOp(op Op) bool {
 
 
 // tell the server to shut itself down.
-func (kv *ShardKV) kill() {
+func (kv *ShardKV) Kill() {
   kv.dead = true
   kv.l.Close()
   //kv.fileL.Close()
@@ -961,7 +961,7 @@ func StartServer(gid int64, shardmasters []string,
       }
       if err != nil && kv.dead == false {
         fmt.Printf("ShardKV(%v) accept: %v\n", me, err.Error())
-        kv.kill()
+        kv.Kill()
       }
     }
   }()

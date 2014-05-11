@@ -38,7 +38,7 @@ func mcleanup(sma []*shardmaster.ShardMaster) {
 func cleanup(sa [][]*ShardKV) {
   for i := 0; i < len(sa); i++ {
     for j := 0; j < len(sa[i]); j++ {
-      sa[i][j].kill()
+      sa[i][j].Kill()
     }
   }
 }
@@ -175,7 +175,7 @@ func TestLimp(t *testing.T) {
   }
 
   for g := 0; g < len(sa); g++ {
-    sa[g][rand.Int() % len(sa[g])].kill()
+    sa[g][rand.Int() % len(sa[g])].Kill()
   }
 
   keys := make([]string, 10)
@@ -209,7 +209,7 @@ func TestLimp(t *testing.T) {
     mck.Leave(gids[g])
     time.Sleep(2 * time.Second)
     for i := 0; i < len(sa[g]); i++ {
-      sa[g][i].kill()
+      sa[g][i].Kill()
     }
     for i := 0; i < len(keys); i++ {
       //v := ck.Get(keys[i])

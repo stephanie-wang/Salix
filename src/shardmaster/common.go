@@ -22,8 +22,13 @@ import "math/big"
 // Please don't change this file.
 //
 
-const NShards = 10
-const TChange = 40
+const (
+  Join = "Join"
+  Leave = "Leave"
+  NShards = 10
+  TChange = 2
+)
+>>>>>>> 6e5f4731dc19db9ff340b11a96cb52088918f0d6
 
 type Config struct {
   Num int // config number
