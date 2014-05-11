@@ -213,7 +213,7 @@ func TestRebalance(t *testing.T){
     cka[i] = MakeClerk([]string{kvh[i]})
   }
 
-  fmt.Printf("Test: Rebalance ...\n")
+  fmt.Printf("Test: Should not rebalance all groups haven't reported ...\n")
 
   var gid1 int64 = 1
   ck.Join(gid1, []string{"x", "y", "z"})
@@ -224,16 +224,14 @@ func TestRebalance(t *testing.T){
   var gid3 int64 = 3
   ck.Join(gid3, []string{"d", "e", "f"})
 
-  fmt.Println(sma[0].scores)
-  fmt.Println(sma[0].configs)
-
   current := ck.Query(-1)
-  fmt.Println(current)
   
   newPops1 := make(map[int]int)
   newPops2 := make(map[int]int)
   newPops3 := make(map[int]int)
 
+  // assume shards that group 1 is seving become really popular
+  // but none of the other ones do
   for i, gid := range current.Shards {
     if gid == gid1 {
       newPops1[i] = 100
@@ -246,12 +244,55 @@ func TestRebalance(t *testing.T){
     }
   }
 
-  ck.PopularityPing(newPops1, current.Num, gid1)
-  ck.PopularityPing(newPops2, current.Num, gid2)
-  ck.PopularityPing(newPops2, current.Num, gid2)
+  // all groups report their updated popularity scores
+  ck.PopularityPing(newPops1, current.Num, 1, gid1)
+  ck.PopularityPing(newPops2, current.Num, 1, gid2)
+  
+  if ck.Query(-1).Num != current.Num{
+    t.Fatalf("Reconfigured too soon.")
+  }
 
-  fmt.Println(ck.Query(-1))
+  fmt.Printf("  ... Passed\n")
+  fmt.Printf("Test: Rebalance after last group reports ...\n")
 
+  ck.PopularityPing(newPops3, current.Num, 1, gid3)
+
+  // change in popularities must have created a new score
+  newConfig := ck.Query(-1)
+  if newConfig.Num != current.Num+1 {
+    t.Fatalf("Expected config #%v but got #%v", current.Num+1, newConfig.Num)
+  }
+
+  total := 0
+  for i, gid := range newConfig.Shards {
+    if gid == gid1 {
+      if current.Shards[i] == gid1 {
+        total += 100
+      } else {
+        total += 1
+      }
+    }
+  }
+
+  if total >= 200 {
+    t.Fatalf("Rebalance should've given group %v a total popularity less than %v", gid1, 200)
+  }
+
+  ck.PopularityPing(newPops1, newConfig.Num, 1, gid1)
+  if ck.Query(-1).Num != newConfig.Num {
+    t.Fatalf("Rebalanced too soon after a change")
+  }
+
+  fmt.Printf("  ... Passed\n")
+  fmt.Printf("Test: Rebalance after a leave no matter what ...\n")
+
+  ck.Leave(gid1)
+
+  if ck.Query(-1).Num == newConfig.Num {
+    t.Fatalf("Did not change after a leave op.")
+  }
+
+  fmt.Printf("  ... Passed\n")
 }
 
 func TestBasic(t *testing.T) {
