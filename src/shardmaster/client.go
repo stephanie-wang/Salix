@@ -58,6 +58,7 @@ func (ck *Clerk) Query(num int) Config {
     for _, srv := range ck.servers {
       args := &QueryArgs{}
       args.Num = num
+      args.ID = nrand()
       var reply QueryReply
       ok := call(srv, "ShardMaster.Query", args, &reply)
       if ok {
@@ -76,6 +77,7 @@ func (ck *Clerk) Join(gid int64, servers []string) {
       args := &JoinArgs{}
       args.GID = gid
       args.Servers = servers
+      args.ID = nrand()
       var reply JoinReply
       ok := call(srv, "ShardMaster.Join", args, &reply)
       if ok {
@@ -92,6 +94,7 @@ func (ck *Clerk) Leave(gid int64) {
     for _, srv := range ck.servers {
       args := &LeaveArgs{}
       args.GID = gid
+      args.ID = nrand()
       var reply LeaveReply
       ok := call(srv, "ShardMaster.Leave", args, &reply)
       if ok {
@@ -109,6 +112,7 @@ func (ck *Clerk) Move(shard int, gid int64) {
       args := &MoveArgs{}
       args.Shard = shard
       args.GID = gid
+      args.ID = nrand()
       var reply LeaveReply
       ok := call(srv, "ShardMaster.Move", args, &reply)
       if ok {
@@ -128,6 +132,7 @@ func (ck *Clerk) PopularityPing(popularities map[int]int, config int, seq int, g
         Seq: seq,
         Config: config,
         Gid: gid,
+        ID: nrand(),
       }
       ok := call(srv, "ShardMaster.PopularityPing", args, args)
       if ok {

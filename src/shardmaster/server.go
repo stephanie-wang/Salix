@@ -47,6 +47,7 @@ type Op struct {
   Servers []string // for JOIN
   Scores map[int]int //for POPULARITY
   Num int // for QUERY
+  ID int64 // for QUERY
 }
 
 // updates sm.configs by applying outstanding Ops until
@@ -88,11 +89,10 @@ func (sm *ShardMaster) execute(op Op) {
   // popularity score is only valid if it's the current configuration
   if op.Type == "POPULARITY" && current.Num == op.ConfigNum {
     seq, ok := sm.latestHeard[op.GID]
-    
+
     // only save score if we haven't heard from group before
     // or if the sequence number from this group is higher than before
     if !ok || op.Seq > seq {
-      
       // WAL means we must create copies of sm.scores
       // and sm.latestHeard so that we can log them
       // before we actually set them in our memory
@@ -108,7 +108,7 @@ func (sm *ShardMaster) execute(op Op) {
       for gid, val := range sm.latestHeard {
         newLatestHeard[gid] = val
       }
-      newLatestHeard[op.GID] = op.ConfigNum
+      newLatestHeard[op.GID] = op.Seq
 
       sm.writeScores(newScores, newLatestHeard)
       sm.scores = newScores
@@ -117,7 +117,6 @@ func (sm *ShardMaster) execute(op Op) {
 
     // all groups have reported values for this config
     if len(sm.latestHeard) == len(current.Groups) {
-      
       newGroups := make(map[int64][]string)
       for gid, servers := range current.Groups {
         newGroups[gid] = servers
@@ -175,6 +174,7 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
 
   // write the stuff to log
   // do it BEFORE actually making changes to memory (WAL)
+
   sm.writeConfig(newConfig)
   newLatestHeard := make(map[int64]int)
   sm.writeScores(sm.scores, newLatestHeard)
@@ -189,9 +189,9 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"MOVE", GID:args.GID, Shard: args.Shard}
+  op := Op{Type:"MOVE", GID:args.GID, Shard: args.Shard, ID: args.ID}
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.Shard == b.Shard {
+    if a.Type == b.Type && a.Shard == b.Shard && a.ID == b.ID {
       return true
     }
     return false
@@ -209,9 +209,11 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"JOIN", GID:args.GID, Servers:args.Servers}
+  fmt.Println("JOIN ", args.GID )
+
+  op := Op{Type:"JOIN", GID:args.GID, Servers:args.Servers, ID: args.ID}
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID {
+    if a.Type == b.Type && a.GID == b.GID && a.ID == b.ID{
       return true
     }
     return false
@@ -228,14 +230,15 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"LEAVE", GID: args.GID}
-  sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID {
+  op := Op{Type:"LEAVE", GID: args.GID, ID: args.ID}
+  seq := sm.propose(op, func(a Op, b Op) bool {
+    if a.Type == b.Type && a.GID == b.GID && a.ID == b.ID {
       return true
     }
     return false
     })
 
+  sm.update(seq, -1)
   return nil
 }
 
@@ -245,10 +248,10 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type:"QUERY", Num: args.Num}
+  op := Op{Type:"QUERY", Num: args.Num, ID: args.ID}
 
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.Num == b.Num {
+    if a.Type == b.Type && a.Num == b.Num && a.ID == b.ID {
       return true
     }
     return false
@@ -278,10 +281,17 @@ func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  op := Op{Type: "POPULARITY", GID:args.Gid, Seq:args.Seq, Scores:args.Popularities, ConfigNum: args.Config}
+  op := Op {
+    Type: "POPULARITY", 
+    GID:args.Gid, 
+    Seq:args.Seq, 
+    Scores:args.Popularities, 
+    ConfigNum: args.Config,
+    ID: args.ID,
+  }
  
   seq := sm.propose(op, func(a Op, b Op) bool {
-    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq && a.ConfigNum == b.ConfigNum {
+    if a.Type == b.Type && a.GID == b.GID && a.Seq == b.Seq && a.ConfigNum == b.ConfigNum && a.ID == b.ID{
       return true
     }
     return false
@@ -357,9 +367,9 @@ func (sm *ShardMaster) Fail(){
 func (sm *ShardMaster) Revive(){
   sm.mu.Lock()
   defer sm.mu.Unlock()
+
   sm.restartMemory()
   sm.fail = false
-  
 }
 
 // please don't change this function.
@@ -395,6 +405,7 @@ func (sm *ShardMaster) startMemory() {
 func (sm *ShardMaster) restartMemory(){
   sm.startMemory()
   sm.makeConfig()
+  sm.makeScores()
 }
 
 //
@@ -433,7 +444,7 @@ func StartServer(servers []string, me int) *ShardMaster {
       // when a server has failed, we are not serving any connections
       if sm.fail {
         conn.Close()
-        continue
+        // continue
       }
       if err == nil && sm.dead == false {
         if sm.unreliable && (rand.Int63() % 1000) < 100 {

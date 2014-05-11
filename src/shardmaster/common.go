@@ -1,5 +1,7 @@
 package shardmaster
 
+import "crypto/rand"
+import "math/big"
 //
 // Master shard server: assigns shards to replication groups.
 //
@@ -38,11 +40,13 @@ type Popularity struct {
   Config int
   Gid int64
   Seq int
+  ID int64 
 }
 
 type JoinArgs struct {
   GID int64       // unique replica group ID
   Servers []string // group server ports
+  ID int64
 }
 
 type JoinReply struct {
@@ -50,6 +54,7 @@ type JoinReply struct {
 
 type LeaveArgs struct {
   GID int64
+  ID int64
 }
 
 type LeaveReply struct {
@@ -58,6 +63,7 @@ type LeaveReply struct {
 type MoveArgs struct {
   Shard int
   GID int64
+  ID int64
 }
 
 type MoveReply struct {
@@ -65,8 +71,16 @@ type MoveReply struct {
 
 type QueryArgs struct {
   Num int // desired config number
+  ID int64 // random ID number
 }
 
 type QueryReply struct {
   Config Config
+}
+
+func nrand() int64 {
+  max := big.NewInt(int64(1) << 62)
+  bigx, _ := rand.Int(rand.Reader, max)
+  x := bigx.Int64()
+  return x
 }

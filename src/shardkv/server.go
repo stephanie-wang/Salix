@@ -183,6 +183,7 @@ func (kv *ShardKV) doOp(seq int) bool {
     if _, inMap := kv.reconfigs[op.Num]; !inMap && success {
       kv.reconfigs[op.Num] = seq
     }
+
   case Reshard:
     success = kv.doReshard(op)
   }
@@ -912,6 +913,9 @@ func StartServer(gid int64, shardmasters []string,
   kv.seen = make(map[int]map[int64]*Reply)
   kv.shardConfigs = make(map[int]int)
   kv.popularities = make(map[int]*PopularityStatus)
+  for i := 0; i < shardmaster.NShards; i++ {
+    kv.popularities[i] = &PopularityStatus{}
+  }
   kv.reconfigs = make(map[int]int)
 
   kv.root = servers[me] + "-root"
@@ -965,11 +969,17 @@ func StartServer(gid int64, shardmasters []string,
   go func() {
     for kv.dead == false {
       kv.tick()
+      kv.cleanTmp()
+      time.Sleep(250 * time.Millisecond)
+    }
+  }()
+
+  go func() {
+    for kv.dead == false {
       if doLoadBalance {
         kv.popularityPing()
       }
-      kv.cleanTmp()
-      time.Sleep(250 * time.Millisecond)
+      time.Sleep(5000 * time.Millisecond)
     }
   }()
 

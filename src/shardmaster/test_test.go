@@ -2,7 +2,6 @@
 // This test suite contains tests relevant to the shardmaster's configuration changes
 // it includes original tests (Basic, Unreliable, FreshQuery).
 // It also contains a Rebalance test that checks the loadbalancing algorithm used.
-// TODO: Completely integrated test with popularity updates & load balancing
 // 
 package shardmaster
 
@@ -80,7 +79,7 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
   }
 }
 
-func TestRebalance(t *testing.T) {
+func TestRebalanceAlgorithm(t *testing.T) {
   
   fmt.Printf("Test: Basic rebalance ...\n")
   var scores [NShards]int = [NShards]int{1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
@@ -192,6 +191,103 @@ func TestRebalance(t *testing.T) {
   }
   
   fmt.Printf("... passed \n")
+}
+
+func TestRebalance(t *testing.T){
+  const nservers = 3
+  var sma []*ShardMaster = make([]*ShardMaster, nservers)
+  var kvh []string = make([]string, nservers)
+  defer cleanup(sma)
+
+  for i := 0; i < nservers; i++ {
+    kvh[i] = port("basic", i)
+  }
+  for i := 0; i < nservers; i++ {
+    sma[i] = StartServer(kvh, i)
+  }
+
+  ck := MakeClerk(kvh)
+
+  fmt.Printf("Test: Should not rebalance all groups haven't reported ...\n")
+
+  var gid1 int64 = 1
+  ck.Join(gid1, []string{"x", "y", "z"})
+
+  var gid2 int64 = 2
+  ck.Join(gid2, []string{"a", "b", "c"})
+
+  var gid3 int64 = 3
+  ck.Join(gid3, []string{"d", "e", "f"})
+
+  current := ck.Query(-1)
+  
+  newPops1 := make(map[int]int)
+  newPops2 := make(map[int]int)
+  newPops3 := make(map[int]int)
+
+  // assume shards that group 1 is serving become really popular
+  // but none of the other ones do
+  for i, gid := range current.Shards {
+    if gid == gid1 {
+      newPops1[i] = 100
+    }
+    if gid == gid2 {
+      newPops2[i] = 1
+    }
+    if gid == gid3 {
+      newPops3[i] = 1
+    }
+  }
+
+  // all groups report their updated popularity scores
+  ck.PopularityPing(newPops1, current.Num, 1, gid1)
+  ck.PopularityPing(newPops2, current.Num, 1, gid2)
+  
+  if ck.Query(-1).Num != current.Num{
+    t.Fatalf("Reconfigured too soon.")
+  }
+
+  fmt.Printf("  ... Passed\n")
+  fmt.Printf("Test: Rebalance after last group reports ...\n")
+
+  ck.PopularityPing(newPops3, current.Num, 1, gid3)
+
+  // change in popularities must have created a new score
+  newConfig := ck.Query(-1)
+  if newConfig.Num != current.Num+1 {
+    t.Fatalf("Expected config #%v but got #%v", current.Num+1, newConfig.Num)
+  }
+
+  total := 0
+  for i, gid := range newConfig.Shards {
+    if gid == gid1 {
+      if current.Shards[i] == gid1 {
+        total += 100
+      } else {
+        total += 1
+      }
+    }
+  }
+
+  if total >= 200 {
+    t.Fatalf("Rebalance should've given group %v a total popularity less than %v", gid1, 200)
+  }
+
+  ck.PopularityPing(newPops1, newConfig.Num, 1, gid1)
+  if ck.Query(-1).Num != newConfig.Num {
+    t.Fatalf("Rebalanced too soon after a change.")
+  }
+
+  fmt.Printf("  ... Passed\n")
+  fmt.Printf("Test: Rebalance after a leave no matter what ...\n")
+
+  ck.Leave(gid1)
+
+  if ck.Query(-1).Num == newConfig.Num {
+    t.Fatalf("Did not change after a leave op.")
+  }
+
+  fmt.Printf("  ... Passed\n")
 }
 
 func TestBasic(t *testing.T) {
@@ -489,4 +585,61 @@ func TestFreshQuery(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
   os.Remove(portx)
+}
+
+func TestPersistence(t *testing.T) {
+  runtime.GOMAXPROCS(4)
+
+  const nservers = 3
+  var sma []*ShardMaster = make([]*ShardMaster, nservers)
+  var kvh []string = make([]string, nservers)
+  defer cleanup(sma)
+
+  for i := 0; i < nservers; i++ {
+    kvh[i] = port("basic", i)
+  }
+  for i := 0; i < nservers; i++ {
+    sma[i] = StartServer(kvh, i)
+  }
+
+  ck := MakeClerk(kvh)
+
+  fmt.Printf("Test: Fails & revives immediately ...\n")
+
+  var gid1 int64 = 1
+  ck.Join(gid1, []string{"x", "y", "z"})
+
+  var gid2 int64 = 2
+  ck.Join(gid2, []string{"a", "b", "c"})
+
+  before := ck.Query(-1).Num
+
+  sma[0].Fail()
+  sma[0].Revive()
+
+  after := ck.Query(-1).Num
+
+  if before != after {
+    t.Fatalf("Not persistent. Expected config %v but got config %v", before, after)
+  }
+
+  fmt.Printf("  ... Passed\n")
+  
+  fmt.Printf("Test: Fails and revives later ... \n")
+
+  sma[0].Fail()
+  
+  var gid3 int64 = 3
+  ck.Join(gid3, []string{"d", "e", "f"})
+
+  sma[0].Revive()
+
+  after = ck.Query(-1).Num
+
+  if after != before+1 {
+    t.Fatalf("Not persistent. Expected new config %v but got config %v", before+1, after)
+  }
+
+  fmt.Printf("  ... Passed\n")
+  
 }
