@@ -192,7 +192,6 @@ func (kv *ShardKV) doOp(seq int) bool {
 
   case Reconfig:
     reconfig := op.ReconfigArgs
-    log.Printf("executing reconfig %d on %d %d", reconfig.Num, kv.me, kv.gid)
     if reconfig.Num <= kv.config.Num {
       // if we've already past this configuration, okay to return
       log.Printf("already past config %d on %d %d", reconfig.Num, kv.me, kv.gid)
@@ -264,17 +263,20 @@ func (kv *ShardKV) doOp(seq int) bool {
 
     if op.Num <= kv.shardConfigs[op.ShardNum] {
       // if we've already received the shard for this config number
+      log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
       return true
     }
     if op.Num != kv.shardConfigs[op.ShardNum] + 1 {
       // if the shard we're receiving is more than one config away from the
       // current shard
+      log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
       return false
     }
 
     if op.Num != kv.config.Num {
       // if the shard we're receiving doesn't match the config we're trying to
       // reconfigure to
+      log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
       return false
     }
 
@@ -328,8 +330,10 @@ func (kv *ShardKV) doOp(seq int) bool {
 }
 
 func (kv *ShardKV) getMissingFiles(root string, files []string) []string {
+  log.Printf("1 got here on %d %d", kv.me, kv.gid)
   kv.fileMu.Lock()
   defer kv.fileMu.Unlock()
+  log.Printf("2 got here on %d %d", kv.me, kv.gid)
   missing := []string{}
   for _, filename := range files {
     _, err := os.Stat(path.Join(root, filename))
@@ -400,7 +404,6 @@ func (kv *ShardKV) write(filename string, buf []byte) (int, Err) {
 }
 
 func initReadBuffer(filename string, bytes int, reply *Reply) {
-
   var size int
   if bytes == -1 {
     f, err := os.Open(filename)
@@ -481,7 +484,7 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
     if len(reply.Shard) == 0 {
       // if the server has all files in shard, record and move to next
       shardHolders[serverAddr] = true
-      log.Println("transfer from %d %d to %s was successful", kv.me, kv.gid, serverAddr)
+      log.Printf("transfer from %d %d to %s was successful", kv.me, kv.gid, serverAddr)
       shardHolder++
       server++
       attempted = false
@@ -603,7 +606,6 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
   meta, _ := reader.ReadString('\n')
 
   splitMeta := strings.Fields(meta)
-  log.Println(splitMeta, len(splitMeta))
   config, _ := strconv.Atoi(splitMeta[0])
   size, _ := strconv.Atoi(splitMeta[1])
   filename := strings.Join(splitMeta[2:], " ")
@@ -624,8 +626,9 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
     log.Println(err.Error())
   }
 
-  w := io.MultiWriter(os.Stdout, f)
-  n, err := io.Copy(w, reader)
+  //w := io.MultiWriter(os.Stdout, f)
+  //n, err := io.Copy(w, reader)
+  n, err := io.Copy(f, reader)
 
   if size != int(n) {
     // copy unsuccessful, so remove file while still under lock
@@ -731,8 +734,10 @@ func (kv *ShardKV) proposeOp(op Op) bool {
   is successfully executed
   Return success
   */
+  log.Printf("1 got here proposing on %d %d", kv.me, kv.gid)
   kv.mu.Lock()
   defer kv.mu.Unlock()
+  log.Printf("2 got here proposing on %d %d", kv.me, kv.gid)
   for proposed := false; !proposed; {
     // propose the op until the op decided by paxos matches ours
     // lock to prevent other ops from being proposed w/same seq
@@ -913,9 +918,12 @@ func StartServer(gid int64, shardmasters []string,
   go func() {
     for kv.dead == false {
       conn, err := kv.fileL.Accept()
-      if err != nil {
-        log.Println(err.Error())
-        continue
+      if !(err == nil && kv.dead == false) {
+        return
+      }
+      if kv.unreliable && (rand.Int63() % 1000) < 100 {
+        // discard the request.
+        conn.Close()
       }
       go kv.receiveFile(conn)
     }
