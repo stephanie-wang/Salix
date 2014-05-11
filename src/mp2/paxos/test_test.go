@@ -718,8 +718,6 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
 
 func TestPartition(t *testing.T) {
   //return//
-  
-  Debug = 0
 
   runtime.GOMAXPROCS(4)
 
@@ -756,6 +754,8 @@ func TestPartition(t *testing.T) {
   fmt.Printf("  ... Passed 12\n")
 
   fmt.Printf("Test: Decision in majority partition ...\n")
+
+  //Debug = 0
 
   part(t, tag, npaxos, []int{0}, []int{1,2,3}, []int{4})
   time.Sleep(2 * time.Second)

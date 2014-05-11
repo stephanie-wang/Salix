@@ -217,7 +217,9 @@ func (px *Paxos) lowestUndecided() int {
 
 func (px *Paxos) preparer(view int) {
   for !px.dead {
+    if px.me == 1 || px.me == 2 || px.me == 3 {
     Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+    }
     
     px.mu.Lock()
     x := px.preparer_iteration(view)
@@ -238,6 +240,7 @@ func (px *Paxos) preparer_iteration(view int) bool {
   //defer px.mu.Unlock()
 
   if px.view >= view {
+    Dprintf("***[%v][view=%v] already-advanced preparer(view=%v)\n", px.me, px.view, view)
     return false
   }
 
@@ -264,6 +267,7 @@ func (px *Paxos) preparer_iteration(view int) bool {
         replies = append(replies, prepareReply)
       } else if prepareReply.View > px.view {     //TODO: might not be needed
         //someone else became leader
+        Dprintf("***[%v][view=%v] other-leader preparer(view=%v)\n", px.me, px.view, view)
         return false
       }
     }
@@ -332,9 +336,13 @@ func (px *Paxos) preparer_iteration(view int) bool {
     
     //px.mu.Unlock()
     
+    Dprintf("***[%v][view=%v] got-majority preparer(view=%v)\n", px.me, px.view, view)
     return false
   }
   
+  if px.me == 1 || px.me == 2 || px.me == 3 {
+  Dprintf("***[%v][view=%v] fail-to-get-majority preparer(view=%v)\n", px.me, px.view, view)
+  }
   return true
 }
 
@@ -465,7 +473,10 @@ func (px *Paxos) probe(view int, seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+
+  if px.me == 1 || px.me == 2 || px.me == 3 {  
   Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
+  }
   
   px.fdHearFrom(args.Me)
   
