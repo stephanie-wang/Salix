@@ -1,68 +1,123 @@
 package paxos
 
+import "os"
+
 const (
 	KIND_GO_START = iota
-  KIND_UPDATE_DONE_VALS = iota
-  KIND_UPDATE_INSTANCE_DECIDED = iota
-  KIND_UPDATE_INSTANCE_ACCEPTED = iota
+  KIND_ADVANCE_VIEW = iota
+  KIND_UPDATE_INSTANCE = iota
 )
 
 type Record interface {
   Kind() int
-  Apply()
+  Apply(px *Paxos)
 }
 
+//Record: GoStart --------------------------
+
 type GoStart struct {
+  KindEnum int
+}
+
+func MakeGoStart() *GoStart {
+  return &GoStart {
+    KindEnum: KIND_GO_START,
+  }
 }
 
 func (rec *GoStart) Kind() int {
-  return 0
+  return rec.KindEnum
 }
 
-func (rec *GoStart) Apply() {
-  
+func (rec *GoStart) Apply(px *Paxos) {
 }
 
-/*
-Record
-  Type
+//Record: AdvanceView --------------------------
+
+type AdvanceView struct {
+  KindEnum int
   
-  GoStart
-  UpdateDoneVals
-  UpdateInstanceDecided
-  UpdateInstanceAccepted
+  View int
+}
 
-RedoLog
-  px
-  filename
-  fd
-  enabled
+func MakeAdvanceView(view int) *AdvanceView {
+  return &AdvanceView {
+    KindEnum: KIND_ADVANCE_VIEW,
+    View: view,
+  }
+}
 
-Startup(px, filename)
-  open file for 
+func (rec *AdvanceView) Kind() int {
+  return rec.KindEnum
+}
+
+func (rec *AdvanceView) Apply(px *Paxos) {
+  px.view = rec.View
+}
+
+//Record: UpdateInstance --------------------------
+
+type UpdateInstance struct {
+  KindEnum int
+}
+
+func MakeUpdateInstance() *UpdateInstance {
+  return &UpdateInstance {
+    KindEnum: KIND_UPDATE_INSTANCE,
+  }
+}
+
+func (rec *UpdateInstance) Kind() int {
+  return rec.KindEnum
+}
+
+func (rec *UpdateInstance) Apply(px *Paxos) {  
+}
+
+//RedoLog class
+
+type RedoLog struct {
+  px *Paxos
+  filename string
+  fd *os.File
+  Enabled bool
+}
+
+func Startup(px *Paxos, filename string) *RedoLog {
+  /*
   if file exists
+    open it
     enabled = false
     apply it
     enabled = true
   if file doesn't exist
     create it
     enabled = true
+  */
+    
+  return nil
+}
 
-ApplyLog()
+func (rlog *RedoLog) applyLog() {
+  /*
   for each line
-    read
-    convert to json
+    bytesread = 0
+    read json and convert to object
     if fail
-      truncate bytesread
+      truncate to bytesread
       break
     update bytesread
     apply record
+  */
+  
+}
 
-ApplyRecord(p)
-
-Log(Record)
+func (rlog *RedoLog) Log(record *Record) {
+  /*
   convert to json
   append to file
   append "\n"
   flush/sync
-*/
+  */
+  
+}
