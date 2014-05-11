@@ -573,11 +573,10 @@ func (kv *ShardKV) sendFiles(dst string, files []*Filepath, config int) {
     fi, _ := os.Stat(filepath.local)
     size := int(fi.Size())
 
-    log.Printf("transferring file %s %s from %s to %s", filepath.local, filepath.base, kv.config.Groups[kv.gid][kv.me], dst)
+    log.Printf("transferring file %s %s from %d %d to %s", filepath.local, filepath.base, kv.me, kv.gid, dst)
     meta := []string{strconv.Itoa(config), strconv.Itoa(size), filepath.base}
     metaString := strings.Join(meta, " ") + "\n"
     conn.Write([]byte(metaString))
-    log.Println(metaString)
 
     f, err := os.Open(filepath.local)
     defer f.Close()
