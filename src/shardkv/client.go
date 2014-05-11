@@ -168,3 +168,40 @@ func (ck *Clerk) WriteHash(file string, contents[]byte, doAppend bool) []byte {
   v := ck.WriteExt(file, contents, doAppend, true)
   return v
 }
+
+func (ck *Clerk) Remove(file string) {
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+
+  // You'll have to modify Read().
+  args := &FileArgs{
+    File: file,
+    Id: nrand(),
+  }
+
+  for {
+    shard := key2shard(file)
+    gid := ck.config.Shards[shard]
+    servers, ok := ck.config.Groups[gid]
+
+    if ok {
+      // try each server in the shard's replication group.
+      for _, srv := range servers {
+        var reply Reply
+        reply.Err = OK
+        ok := call(srv, "ShardKV.Remove", args, &reply)
+        if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+          return
+        }
+        if ok && (reply.Err == ErrWrongGroup) {
+          break
+        }
+      }
+    }
+
+    time.Sleep(100 * time.Millisecond)
+
+    // ask master for a new configuration.
+    ck.config = ck.sm.Query(-1)
+  }
+}

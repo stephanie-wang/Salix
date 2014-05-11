@@ -33,6 +33,7 @@ func (ps *PopularityStatus) popularity() int {
 const (
   Read = "Read"
   Write = "Write"
+  Remove = "Remove"
   Reconfig = "Reconfig"
   Reshard = "Reshard"
   Nop = "Nop"
