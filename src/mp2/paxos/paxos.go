@@ -226,7 +226,7 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
-//  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
 
   for !px.dead {
     
@@ -245,7 +245,7 @@ func (px *Paxos) preparer(view int) {
 
 //returns true for continue
 func (px *Paxos) preparer_iteration(view int) bool {
-//Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
+Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
 
   //this breaks code
   //px.mu2.Lock()
@@ -358,7 +358,7 @@ func (px *Paxos) preparer_iteration(view int) bool {
     return false
   }
   
-  //Dprintf("***[%v][view=%v] fail-to-get-majority preparer(view=%v)\n", px.me, px.view, view)
+  Dprintf("***[%v][view=%v] fail-to-get-majority preparer(view=%v)\n", px.me, px.view, view)
   
   return true
 }
@@ -459,7 +459,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
 }
 
 func (px *Paxos) probe(view int, seq int) {
-  //Dprintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
+  Dprintf("***[%v][view=%v] prober(view=%v, seq=%v)\n", px.me, px.view, view, seq)
   
   for i:=0; i<px.numPeers && !px.dead; i++ {
     probeArgs := ProbeArgs{}
@@ -550,6 +550,8 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   //doing it with px.mu will deadlock
   //solution: create a viewMu just for reading/updating mu?
   
+  Dprintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+  
   px.viewMu.Lock()
   if args.View >= px.view {
     Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
@@ -577,11 +579,11 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
   
+  Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  
   if args.Seq < px.Min() {
     return nil
   }
-  
-  Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   px.fdHearFrom(args.Me)
   
@@ -600,6 +602,8 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
 
+  Dprintf("***[%v][view=%v] onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+
   if args.Seq < px.Min() {
     return nil
   }
@@ -610,7 +614,7 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   if inst.Decided {
     reply.Decided = true
     reply.DecidedVal = inst.DecidedVal
-    //Dprintf("***[%v][view=%v] found! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    Dprintf("***[%v][view=%v] found! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
   }
   inst.mu.Unlock()
   
