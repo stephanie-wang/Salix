@@ -315,19 +315,21 @@ Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
           inst := px.GetInstance(slot)
           inst.mu.Lock()
           
-          if !inst.Decided {
-            if !inst.Accepted ||
-                 //recvd.Decided ||
-                 (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
+          Dprintf("***[%v][view=%v] looping slot=%v mine=%v recvd=%v preparer(view=%v, %v)\n", px.me, px.view, slot, inst, recvd, view, lowestUndecided)
+          
+          //if !inst.Decided { <- this line causes decided vals to be different. it is the devil
+            if !inst.Accepted || (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
 
               //don't overwrite my decided value!
               inst.Accepted = recvd.Accepted
               inst.View_a = recvd.View_a
               inst.V_a = recvd.V_a
               
+              Dprintf("***[%v][view=%v] TRUE slot=%v preparer(view=%v, %v)\n", px.me, px.view, slot, view, lowestUndecided)
+              
               changed = append(changed, slot)
             }
-          }
+          //}
           
           inst.mu.Unlock()
         }
