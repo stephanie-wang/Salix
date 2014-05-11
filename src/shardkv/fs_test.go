@@ -133,13 +133,19 @@ func TestTransferShard(t *testing.T) {
 
   var count int
   for _, addr := range ha[1] {
-    f, _ := os.Open(path.Join(addr + "-root", "tmp", "3", "testTransfer"))
-    out = make([]byte, len(testString))
-    f.Read(out)
-    if string(out) == testString {
+    fTmp, _ := os.Open(path.Join(addr + "-root", "tmp", "3", "testTransfer"))
+    outTmp := make([]byte, len(testString))
+    fTmp.Read(outTmp)
+    fTmp.Close()
+
+    fRoot, _ := os.Open(path.Join(addr + "-root", "testTransfer"))
+    outRoot := make([]byte, len(testString))
+    fRoot.Read(outRoot)
+    fRoot.Close()
+
+    if string(outTmp) == testString || string(outRoot) == testString {
       count++
     }
-    f.Close()
   }
   if count <= len(ha[1])/2 {
     t.Fatalf("file was not transferred to majority of group %d", gids[1])

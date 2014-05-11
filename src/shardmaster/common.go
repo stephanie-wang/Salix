@@ -21,6 +21,7 @@ package shardmaster
 //
 
 const NShards = 10
+const TChange = 2
 
 type Config struct {
   Num int // config number

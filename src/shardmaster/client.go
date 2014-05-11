@@ -119,12 +119,13 @@ func (ck *Clerk) Move(shard int, gid int64) {
   }
 }
 
-func (ck *Clerk) PopularityPing(popularities map[int]int, config int, gid int64) {
+func (ck *Clerk) PopularityPing(popularities map[int]int, config int, seq int, gid int64) {
   for {
     // try each known server.
     for _, srv := range ck.servers {
       args := &Popularity{
         Popularities: popularities,
+        Seq: seq,
         Config: config,
         Gid: gid,
       }

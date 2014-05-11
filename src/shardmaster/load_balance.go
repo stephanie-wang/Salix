@@ -18,7 +18,15 @@ type Shard struct {
 	Num int
 	Score int
 	Group int64
-	ValidGroup int
+}
+
+func equals(a [NShards]int64, b [NShards]int64) bool {
+	for i, gid := range a {
+		if gid != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // main load balancing function
@@ -36,26 +44,21 @@ func loadBalance(scores [NShards]int, old [NShards]int64, newGroups map[int64]bo
 
 	// create the shard values
 	shards := make([]Shard, NShards)
-	total := 0	// total score is an upperbound for the score of a particular group
 
-	// TODO: algorithm doesn't work if score is 0 so we adjust by adding 1
-	// 		 this means we're technically balancing popularity+1 for all shards
-	//		 does this make a difference?
 	for i, gid := range old {
-		shards[i] = Shard{Num: i, Score: scores[i]+1, Group: gid}
+		shards[i] = Shard{Num: i, Score: scores[i], Group: gid}
 		_, ok := newGroups[gid]
 		if ok {
-			groupScore[gid] += scores[i]+1	
+			groupScore[gid] += scores[i]
 		}
-		total += scores[i]+1
 	}
 
-	// first assign the shards whose old group is no longer valie
+	// first assign the shards whose old group is no longer valid
 	// i.e. old group is 0 or old group has left
 	for i, shard := range shards {
 		_, ok := newGroups[shard.Group]
 		if !ok {
-			newGrp := minGID(groupScore, total)
+			newGrp := minGID(groupScore)
 			shard.Group = newGrp
 			shards[i] = shard
 			groupScore[newGrp] += shard.Score
@@ -67,10 +70,13 @@ func loadBalance(scores [NShards]int, old [NShards]int64, newGroups map[int64]bo
 	// continue until it no longer makes sense to do this
 	for {
 		fromGrp := maxGID(groupScore)
-		toGrp := minGID(groupScore, total)
-		shard := minShard(shards, fromGrp, total)
+		toGrp := minGID(groupScore)
+		shard := minShard(shards, fromGrp)
 
 		beforeDiff := groupScore[fromGrp] - groupScore[toGrp]
+		if beforeDiff < TChange {
+			break
+		}
 
 		if shard.Score >= beforeDiff {
 			break
@@ -93,12 +99,16 @@ func loadBalance(scores [NShards]int, old [NShards]int64, newGroups map[int64]bo
 }
 
 // returns the GID of the group in groupScore that has the lowest sum of scores (popularity)
-// total is needed as an upperbound for the lowest sum of scores
-func minGID(groupScore map[int64]int, total int) int64 {
-	var gid int64
-	min := total
+func minGID(groupScore map[int64]int) int64 {
+	var gid int64 = 0
+	var min int
 	
 	for group, score := range groupScore {
+		if gid == 0 {
+			gid = group
+			min = score
+			continue
+		}
 		if score <= min {
 			min = score
 			gid = group
@@ -123,12 +133,16 @@ func maxGID(groupScore map[int64]int) int64 {
 }
 
 // returns the least popular shard in shards that is also assigned to group gid
-// total provides an upperbound for the score of this shard
-func minShard(shards []Shard, gid int64, total int) Shard {
+func minShard(shards []Shard, gid int64) Shard {
 	var out Shard
-	min := total
+	var min int = -1
 
 	for _, shard := range shards {
+		if shard.Group == gid && min == -1 {
+			out = shard
+			min = shard.Score
+			continue
+		}
 		if shard.Group == gid && shard.Score < min {
 			out = shard
 			min = shard.Score
