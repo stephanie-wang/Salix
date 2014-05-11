@@ -84,6 +84,12 @@ type RedoLog struct {
 }
 
 func Startup(px *Paxos, filename string) *RedoLog {
+  rlog = &RedoLog {
+    px: px,
+    filename: filename,
+    Enabled: false,
+  }
+
   /*
   if file exists
     open it
@@ -95,7 +101,9 @@ func Startup(px *Paxos, filename string) *RedoLog {
     enabled = true
   */
     
-  return nil
+  f, err := os.OpenFile(, os.O_RDWR, 0666)
+  
+  return rlog
 }
 
 func (rlog *RedoLog) applyLog() {
