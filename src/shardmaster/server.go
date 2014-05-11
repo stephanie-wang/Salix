@@ -178,9 +178,6 @@ func (sm *ShardMaster) createNewConfig(groups map[int64][]string) {
   newLatestHeard := make(map[int64]int)
   sm.writeScores(sm.scores, newLatestHeard)
 
-  fmt.Println("NEW CONFIG!")
-  fmt.Println(newConfig)
-
   sm.configs = append(sm.configs, newConfig)
   sm.latestHeard = newLatestHeard
 }
@@ -282,8 +279,6 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 func (sm *ShardMaster) PopularityPing(args *Popularity, reply *Popularity) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
-
-  fmt.Println("GOT POP PING FROM GROUP ", args.Gid, args.Popularities)
 
   op := Op {
     Type: "POPULARITY", 
