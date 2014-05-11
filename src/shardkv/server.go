@@ -96,8 +96,8 @@ func (kv *ShardKV) Read(args *FileArgs, reply *Reply) error {
       reply.Err = ErrWrongGroup
       return nil
     }
-    initReadBuffer(kv.getFilepath(args.File), args.Bytes, reply)
-    reply.N, reply.Err = kv.readAt(args.File, reply.Contents, args.Off, true)
+    reply.Contents, reply.Err = kv.initReadBuffer(args.File, args.Bytes)
+    reply.N, reply.Err = kv.readAt(args.File, reply.Contents, args.Offset, true)
     return nil
   }
 
@@ -175,12 +175,12 @@ func (kv *ShardKV) doOp(seq int) bool {
 }
 
 func (kv *ShardKV) getMissingFiles(root string, files []string) []string {
+  //TODO: also check if size is correct...
   kv.fileMu.Lock()
   defer kv.fileMu.Unlock()
   missing := []string{}
   for _, filename := range files {
-    _, err := os.Stat(path.Join(root, filename))
-    if err != nil && os.IsNotExist(err) {
+    if !kv.exists(path.Join(root, filename)) {
       missing = append(missing, filename)
     }
   }
@@ -214,7 +214,7 @@ func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (i
 }
 
 
-func (kv *ShardKV) write(filename string, buf []byte) (int, Err) {
+func (kv *ShardKV) write(filename string, buf []byte, doAppend bool) (int, Err) {
   kv.fileMu.Lock()
   defer kv.fileMu.Unlock()
 
@@ -223,15 +223,19 @@ func (kv *ShardKV) write(filename string, buf []byte) (int, Err) {
   kv.popularities[shard].writes++
   kv.popularityMu.Unlock()
 
-  _, err := os.Stat(kv.getFilepath(filename))
-  if err != nil && os.IsNotExist(err) {
+  if !kv.exists(kv.getFilepath(filename)) {
     log.Printf("adding file %s to shard %s", filename, shard)
     kv.store[shard] = append(kv.store[shard], filename)
   }
 
-  f, err := os.Create(kv.getFilepath(filename))
-
+  var f *os.File
+  var err error
   defer f.Close()
+  if doAppend {
+    f, err = os.OpenFile(kv.getFilepath(filename), os.O_APPEND | os.O_CREATE, 0666)
+  } else {
+    f, err = os.Create(kv.getFilepath(filename))
+  }
   if err != nil {
     return 0, Err(err.Error())
   }
@@ -262,8 +266,8 @@ func (kv *ShardKV) doReadWrite(op Op) bool {
   kv.initShardMap(shard)
   var reply Reply
   if op.Type == Read {
-    initReadBuffer(kv.getFilepath(op.File), op.Bytes, &reply)
-    reply.N, reply.Err = kv.readAt(op.File, reply.Contents, op.Off, false)
+    reply.Contents, reply.Err = kv.initReadBuffer(op.File, op.Bytes)
+    reply.N, reply.Err = kv.readAt(op.File, reply.Contents, op.Offset, false)
   } else {
     // TODO: keep dohash for now so we can test
     //val := ""
@@ -274,7 +278,16 @@ func (kv *ShardKV) doReadWrite(op Op) bool {
     //  val = strconv.Itoa(int(hash(prevVal + val)))
     //  reply = Reply{Value: prevVal}
     //}
-    reply.N, reply.Err = kv.write(op.File, op.Contents)
+    val := op.Contents
+    if op.DoHash {
+      prevVal, _ := kv.initReadBuffer(op.File, -1)
+      kv.readAt(op.File, prevVal, 0, false)
+      reply.Contents = prevVal
+      prevVal = append(prevVal, val...)
+      hashed := hash(string(prevVal))
+      val = []byte(strconv.Itoa(int(hashed)))
+    }
+    reply.N, reply.Err = kv.write(op.File, val, op.DoAppend)
   }
   // save the reply
   kv.seen[shard][op.Id] = &reply
@@ -444,25 +457,28 @@ func (kv *ShardKV) doReshard(op Op) bool {
 }
 
 
-func initReadBuffer(filename string, bytes int, reply *Reply) {
+func (kv *ShardKV) initReadBuffer(base string, bytes int) ([]byte, Err) {
+  filename := kv.getFilepath(base)
   var size int
+  if !kv.exists(filename) {
+    return []byte{}, "does not exist"
+  }
   if bytes == -1 {
     f, err := os.Open(filename)
     if err != nil {
-      reply.Err = Err(err.Error())
-      return
+      return []byte{}, Err(err.Error())
     }
     fInfo, err := f.Stat()
     if err != nil {
-      reply.Err = Err(err.Error())
-      return
+      return []byte{}, Err(err.Error())
     }
     f.Close()
     size = int(fInfo.Size())
   } else {
     size = bytes
   }
-  reply.Contents = make([]byte, size)
+  //reply.Contents = make([]byte, size)
+  return make([]byte, size), ""
 }
 
 func (kv *ShardKV) initShardMap(shard int) {
@@ -645,6 +661,12 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
   meta, _ := reader.ReadString('\n')
 
   splitMeta := strings.Fields(meta)
+
+  if len(splitMeta) < 3 {
+    log.Printf("did not receive all metadata on %d %d", kv.me, kv.gid)
+    return
+  }
+
   config, _ := strconv.Atoi(splitMeta[0])
   size, _ := strconv.Atoi(splitMeta[1])
   filename := strings.Join(splitMeta[2:], " ")
@@ -655,16 +677,18 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
   }
 
   log.Println("receiving file on", kv.me, kv.gid, config, filename)
-  tmpDir := kv.getTmpPathname(config)
+  tmpPath := path.Join(kv.getTmpPathname(config), filename)
 
   // don't write the file again if it already exists and has correct size
-  fi, err := os.Stat(path.Join(tmpDir, filename))
-  if !(err != nil && os.IsNotExist(err)) && int(fi.Size()) == size {
-    log.Println("file already here")
-    return
+  if kv.exists(tmpPath) {
+    fi, _ := os.Stat(tmpPath)
+    if int(fi.Size()) == size {
+      log.Println("file already here")
+      return
+    }
   }
 
-  f, err := os.Create(path.Join(tmpDir, filename))
+  f, err := os.Create(tmpPath)
   defer f.Close()
   if err != nil {
     log.Println(err.Error())
@@ -674,12 +698,17 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
 
   if size != int(n) {
     // copy unsuccessful, so remove file while still under lock
-    log.Println("file transfer failed on", kv.me, kv.gid, config, filename)
-    os.Remove(path.Join(tmpDir, filename))
+    log.Printf("file transfer failed on", kv.me, kv.gid, config, filename)
+    os.Remove(tmpPath)
   }
   if err != nil {
     log.Println(err.Error())
   }
+}
+
+func (kv *ShardKV) exists(filename string) bool {
+  _, err := os.Stat(filename)
+  return !(err != nil && os.IsNotExist(err))
 }
 
 func (kv *ShardKV) wait(condition func() bool) {

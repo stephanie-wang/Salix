@@ -47,9 +47,10 @@ type FileArgs struct {
   Contents []byte
   Id int64
   Bytes int
-  Off int64
+  Offset int64 // for read only
   Stale bool // for read only
   DoHash bool // for write only
+  DoAppend bool // for write only
 }
 
 type Filepath struct {

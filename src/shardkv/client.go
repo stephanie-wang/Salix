@@ -77,7 +77,7 @@ func key2shard(key string) int {
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
-func (ck *Clerk) Read(file string, bytes int, off int64, stale bool) []byte {
+func (ck *Clerk) Read(file string, bytes int, offset int64, stale bool) []byte {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
@@ -86,7 +86,7 @@ func (ck *Clerk) Read(file string, bytes int, off int64, stale bool) []byte {
     File: file,
     Id: nrand(),
     Bytes: bytes,
-    Off: off,
+    Offset: offset,
     Stale: stale,
   }
 
@@ -120,14 +120,15 @@ func (ck *Clerk) Read(file string, bytes int, off int64, stale bool) []byte {
   return []byte{}
 }
 
-func (ck *Clerk) WriteExt(file string, contents []byte, dohash bool) []byte {
+func (ck *Clerk) WriteExt(file string, contents []byte, doAppend bool, doHash bool) []byte {
   ck.mu.Lock()
   defer ck.mu.Unlock()
 
   args := &FileArgs{
     File: file,
     Contents: contents,
-    DoHash: dohash,
+    DoHash: doHash,
+    DoAppend: doAppend,
     Id: nrand(),
   }
 
@@ -160,10 +161,10 @@ func (ck *Clerk) WriteExt(file string, contents []byte, dohash bool) []byte {
   }
 }
 
-func (ck *Clerk) Write(file string, contents []byte) {
-  ck.WriteExt(file, contents, false)
+func (ck *Clerk) Write(file string, contents []byte, doAppend bool) {
+  ck.WriteExt(file, contents, doAppend, false)
 }
-func (ck *Clerk) WriteHash(file string, contents[]byte) []byte {
-  v := ck.WriteExt(file, contents, true)
+func (ck *Clerk) WriteHash(file string, contents[]byte, doAppend bool) []byte {
+  v := ck.WriteExt(file, contents, doAppend, true)
   return v
 }
