@@ -50,7 +50,7 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-var FAILURE_DETECTOR_TO = 100  //ms
+var FAILURE_DETECTOR_TO = 1000  //ms
 
 type Paxos struct {
   mu sync.Mutex

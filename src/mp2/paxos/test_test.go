@@ -675,108 +675,124 @@ func TestPartition(t *testing.T) {
   fmt.Printf("  ... Passed 16\n")
 }
 
-func TestLots(t *testing.T) {
-  runtime.GOMAXPROCS(4)
+func TestBenchmark(t *testing.T) {
+  var total float64 = 0
+  var divide float64 = 50
 
-  fmt.Printf("Test: Many requests, changing partitions ...\n")
-
-  tag := "lots"
-  const npaxos = 5
-  var pxa []*Paxos = make([]*Paxos, npaxos)
-  defer cleanup(pxa)
-  defer cleanpp(tag, npaxos)
-
-  for i := 0; i < npaxos; i++ {
-    var pxh []string = make([]string, npaxos)
-    for j := 0; j < npaxos; j++ {
-      if j == i {
-        pxh[j] = port(tag, i)
-      } else {
-        pxh[j] = pp(tag, i, j)
-      }
-    }
-    pxa[i] = Make(pxh, i, nil)
-    pxa[i].unreliable = true
+  for i:=0; i<50; i++ {
+    start := time.Now()
+    TestPartition(t)
+    end := time.Now()
+    total += end.Sub(start).Seconds()
   }
-  defer part(t, tag, npaxos, []int{}, []int{}, []int{})
+  
+  avg := total/divide
 
-  done := false
-
-  // re-partition periodically
-  ch1 := make(chan bool)
-  go func() {
-    defer func(){ ch1 <- true }()
-    for done == false {
-      var a [npaxos]int
-      for i := 0; i < npaxos; i++ {
-        a[i] = (rand.Int() % 3)
-      }
-      pa := make([][]int, 3)
-      for i := 0; i < 3; i++ {
-        pa[i] = make([]int, 0)
-        for j := 0; j < npaxos; j++ {
-          if a[j] == i {
-            pa[i] = append(pa[i], j)
-          }
-        }
-      }
-      part(t, tag, npaxos, pa[0], pa[1], pa[2])
-      time.Sleep(time.Duration(rand.Int63() % 200) * time.Millisecond)
-    }
-  }()
-
-  seq := 0
-
-  // periodically start a new instance
-  ch2 := make(chan bool)
-  go func () {
-    defer func() { ch2 <- true } ()
-    for done == false {
-      // how many instances are in progress?
-      nd := 0
-      for i := 0; i < seq; i++ {
-        if ndecided(t, pxa, i) == npaxos {
-          nd++
-        }
-      }
-      if seq - nd < 10 {
-        for i := 0; i < npaxos; i++ {
-          pxa[i].Start(seq, rand.Int() % 10)
-        }
-        seq++
-      }
-      time.Sleep(time.Duration(rand.Int63() % 300) * time.Millisecond)
-    }
-  }()
-
-  // periodically check that decisions are consistent
-  ch3 := make(chan bool)
-  go func() {
-    defer func() { ch3 <- true }()
-    for done == false {
-      for i := 0; i < seq; i++ {
-        ndecided(t, pxa, i)
-      }
-      time.Sleep(time.Duration(rand.Int63() % 300) * time.Millisecond)
-    }
-  }()
-
-  time.Sleep(20 * time.Second)
-  done = true
-  <- ch1
-  <- ch2
-  <- ch3
-
-  // repair, then check that all instances decided.
-  for i := 0; i < npaxos; i++ {
-    pxa[i].unreliable = false
-  }
-  part(t, tag, npaxos, []int{0,1,2,3,4}, []int{}, []int{})
-  time.Sleep(5 * time.Second)
-
-  for i := 0; i < seq; i++ {
-    waitmajority(t, pxa, i)
-  }
-
-  fmt.Printf("  ... Passed 17\n")
+  fmt.Printf("Average is "+ strconv.FormatFloat(avg, 'f', 4, 64) + "\n")
 }
+
+// func TestLots(t *testing.T) {
+//   runtime.GOMAXPROCS(4)
+
+//   fmt.Printf("Test: Many requests, changing partitions ...\n")
+
+//   tag := "lots"
+//   const npaxos = 5
+//   var pxa []*Paxos = make([]*Paxos, npaxos)
+//   defer cleanup(pxa)
+//   defer cleanpp(tag, npaxos)
+
+//   for i := 0; i < npaxos; i++ {
+//     var pxh []string = make([]string, npaxos)
+//     for j := 0; j < npaxos; j++ {
+//       if j == i {
+//         pxh[j] = port(tag, i)
+//       } else {
+//         pxh[j] = pp(tag, i, j)
+//       }
+//     }
+//     pxa[i] = Make(pxh, i, nil)
+//     pxa[i].unreliable = true
+//   }
+//   defer part(t, tag, npaxos, []int{}, []int{}, []int{})
+
+//   done := false
+
+//   // re-partition periodically
+//   ch1 := make(chan bool)
+//   go func() {
+//     defer func(){ ch1 <- true }()
+//     for done == false {
+//       var a [npaxos]int
+//       for i := 0; i < npaxos; i++ {
+//         a[i] = (rand.Int() % 3)
+//       }
+//       pa := make([][]int, 3)
+//       for i := 0; i < 3; i++ {
+//         pa[i] = make([]int, 0)
+//         for j := 0; j < npaxos; j++ {
+//           if a[j] == i {
+//             pa[i] = append(pa[i], j)
+//           }
+//         }
+//       }
+//       part(t, tag, npaxos, pa[0], pa[1], pa[2])
+//       time.Sleep(time.Duration(rand.Int63() % 200) * time.Millisecond)
+//     }
+//   }()
+
+//   seq := 0
+
+//   // periodically start a new instance
+//   ch2 := make(chan bool)
+//   go func () {
+//     defer func() { ch2 <- true } ()
+//     for done == false {
+//       // how many instances are in progress?
+//       nd := 0
+//       for i := 0; i < seq; i++ {
+//         if ndecided(t, pxa, i) == npaxos {
+//           nd++
+//         }
+//       }
+//       if seq - nd < 10 {
+//         for i := 0; i < npaxos; i++ {
+//           pxa[i].Start(seq, rand.Int() % 10)
+//         }
+//         seq++
+//       }
+//       time.Sleep(time.Duration(rand.Int63() % 300) * time.Millisecond)
+//     }
+//   }()
+
+//   // periodically check that decisions are consistent
+//   ch3 := make(chan bool)
+//   go func() {
+//     defer func() { ch3 <- true }()
+//     for done == false {
+//       for i := 0; i < seq; i++ {
+//         ndecided(t, pxa, i)
+//       }
+//       time.Sleep(time.Duration(rand.Int63() % 300) * time.Millisecond)
+//     }
+//   }()
+
+//   time.Sleep(20 * time.Second)
+//   done = true
+//   <- ch1
+//   <- ch2
+//   <- ch3
+
+//   // repair, then check that all instances decided.
+//   for i := 0; i < npaxos; i++ {
+//     pxa[i].unreliable = false
+//   }
+//   part(t, tag, npaxos, []int{0,1,2,3,4}, []int{}, []int{})
+//   time.Sleep(5 * time.Second)
+
+//   for i := 0; i < seq; i++ {
+//     waitmajority(t, pxa, i)
+//   }
+
+//   fmt.Printf("  ... Passed 17\n")
+// }
