@@ -83,8 +83,18 @@ type RedoLog struct {
   Enabled bool
 }
 
+// returns whether file or directory exists
+func exists(name string) bool {
+  if _, err := os.Stat(name); err != nil {
+    if os.IsNotExist(err) {
+      return false
+    }
+  }
+  return true
+}
+
 func Startup(px *Paxos, filename string) *RedoLog {
-  rlog = &RedoLog {
+  rlog := &RedoLog {
     px: px,
     filename: filename,
     Enabled: false,
@@ -101,7 +111,7 @@ func Startup(px *Paxos, filename string) *RedoLog {
     enabled = true
   */
     
-  f, err := os.OpenFile(, os.O_RDWR, 0666)
+  //_, _ := os.OpenFile(rlog.filename, os.O_RDWR, 0666)
   
   return rlog
 }
