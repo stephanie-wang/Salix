@@ -20,8 +20,12 @@ package shardmaster
 // Please don't change this file.
 //
 
-const NShards = 10
-const TChange = 2
+const (
+  Join = "Join"
+  Leave = "Leave"
+  NShards = 10
+  TChange = 2
+)
 
 type Config struct {
   Num int // config number
