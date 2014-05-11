@@ -155,9 +155,14 @@ func main() {
       println("ha: " + strings.Join(ha[i], ","))
     }
 
+    ck := shardmaster.MakeClerk(smh)
+    for i, _ := range gids {
+      ck.Join(gids[i], ha[i])
+    }
+
     for {
       line, _ := r.ReadString('\n')
-      if line != "Exit\n" {
+      if line != "exit\n" && line != "Exit\n" {
         continue
       } else {
         return
