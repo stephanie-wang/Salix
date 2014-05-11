@@ -206,7 +206,7 @@ func (px *Paxos) lowestUndecided() int {
   px.mu.Lock()
   defer px.mu.Unlock()
 
-  slot := 0   //px.Min()
+  slot := 0
   for {
     inst := px.GetInstanceNoLock(slot)
     inst.mu.Lock()
