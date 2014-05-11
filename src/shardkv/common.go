@@ -57,31 +57,6 @@ type Filepath struct {
   base string
 }
 
-//type WriteArgs struct {
-//  File string
-//  Value string
-//  DoHash bool  // For PutHash
-//  // You'll have to add definitions here.
-//  // Field names must start with capital letters,
-//  // otherwise RPC will break.
-//  Id int64
-//  Bytes int
-//  Off int64
-//}
-
-//type PutReply struct {
-  //Err Err
-  //PreviousValue string   // For PutHash
-//}
-
-//type ReadArgs struct {
-//  File string
-//  Id int64
-//  Stale bool
-//  Bytes int
-//  Off int64
-//}
-
 //type GetReply struct {
 type Reply struct {
   Err Err
