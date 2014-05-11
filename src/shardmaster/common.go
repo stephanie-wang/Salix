@@ -23,7 +23,7 @@ import "math/big"
 //
 
 const NShards = 10
-const TChange = 2
+const TChange = 40
 
 type Config struct {
   Num int // config number

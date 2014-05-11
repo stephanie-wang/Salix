@@ -251,7 +251,7 @@ func (kv *ShardKV) doOp(seq int) bool {
       }
 
       // reset all popularities after a reconfig
-      kv.popularities[shard] = &PopularityStatus{}
+      // kv.popularities[shard] = &PopularityStatus{}
     }
 
     kv.config = *reconfig
@@ -833,6 +833,9 @@ func StartServer(gid int64, shardmasters []string,
   kv.seen = make(map[int]map[int64]*Reply)
   kv.shardConfigs = make(map[int]int)
   kv.popularities = make(map[int]*PopularityStatus)
+  for i := 0; i < shardmaster.NShards; i++ {
+    kv.popularities[i] = &PopularityStatus{}
+  }
   kv.reconfigs = make(map[int]int)
 
   // TODO: consider chrooting to this
@@ -887,11 +890,17 @@ func StartServer(gid int64, shardmasters []string,
   go func() {
     for kv.dead == false {
       kv.tick()
+      kv.cleanTmp()
+      time.Sleep(250 * time.Millisecond)
+    }
+  }()
+
+  go func() {
+    for kv.dead == false {
       if doLoadBalance {
         kv.popularityPing()
       }
-      kv.cleanTmp()
-      time.Sleep(250 * time.Millisecond)
+      time.Sleep(5000 * time.Millisecond)
     }
   }()
 
