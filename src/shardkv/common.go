@@ -33,6 +33,7 @@ func (ps *PopularityStatus) popularity() int {
 const (
   Read = "Read"
   Write = "Write"
+  Remove = "Remove"
   Reconfig = "Reconfig"
   Reshard = "Reshard"
   Nop = "Nop"
@@ -47,40 +48,16 @@ type FileArgs struct {
   Contents []byte
   Id int64
   Bytes int
-  Off int64
+  Offset int64 // for read only
   Stale bool // for read only
   DoHash bool // for write only
+  DoAppend bool // for write only
 }
 
 type Filepath struct {
   local string
   base string
 }
-
-//type WriteArgs struct {
-//  File string
-//  Value string
-//  DoHash bool  // For PutHash
-//  // You'll have to add definitions here.
-//  // Field names must start with capital letters,
-//  // otherwise RPC will break.
-//  Id int64
-//  Bytes int
-//  Off int64
-//}
-
-//type PutReply struct {
-  //Err Err
-  //PreviousValue string   // For PutHash
-//}
-
-//type ReadArgs struct {
-//  File string
-//  Id int64
-//  Stale bool
-//  Bytes int
-//  Off int64
-//}
 
 //type GetReply struct {
 type Reply struct {

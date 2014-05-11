@@ -22,10 +22,10 @@ func port(tag string, host int) string {
   return s
 }
 
-//func NextValue(hprev string, val string) string {
-//  h := hash(hprev + val)
-//  return strconv.Itoa(int(h))
-//}
+func NextValue(hprev string, val string) string {
+  h := hash(hprev + val)
+  return strconv.Itoa(int(h))
+}
 
 func mcleanup(sma []*shardmaster.ShardMaster) {
   for i := 0; i < len(sma); i++ {
@@ -93,7 +93,7 @@ func TestReadWrite(t *testing.T) {
 
   testString := "hello"
   testFile := "testRead"
-  ck.Write(testFile, []byte(testString))
+  ck.Write(testFile, []byte(testString), false)
   out := ck.Read(testFile, len(testString), 0, false)
 
   if string(out) != testString {
@@ -115,7 +115,7 @@ func TestTransferShard(t *testing.T) {
   ck := MakeClerk(smh)
 
   testString := "hello"
-  ck.Write("testTransfer", []byte(testString))
+  ck.Write("testTransfer", []byte(testString), false)
   out := ck.Read("testTransfer", len(testString), 0, false)
 
   if string(out) != testString {
@@ -167,7 +167,7 @@ func TestLimp(t *testing.T) {
   ck := MakeClerk(smh)
 
   testString := "hello"
-  ck.Write("a", []byte(testString))
+  ck.Write("a", []byte(testString), false)
   out := ck.Read("a", len(testString), 0, false)
 
   if string(out) != testString {
@@ -183,7 +183,7 @@ func TestLimp(t *testing.T) {
   for i := 0; i < len(keys); i++ {
     keys[i] = strconv.Itoa(rand.Int())
     vals[i] = strconv.Itoa(rand.Int())
-    ck.Write(keys[i], []byte(vals[i]))
+    ck.Write(keys[i], []byte(vals[i]), false)
     //ck.Put(keys[i], vals[i])
   }
 
@@ -200,29 +200,91 @@ func TestLimp(t *testing.T) {
       }
       vals[i] = strconv.Itoa(rand.Int())
       //ck.Put(keys[i], vals[i])
-      ck.Write(keys[i], []byte(vals[i]))
+      ck.Write(keys[i], []byte(vals[i]), false)
     }
   }
 
   // are keys still there after leaves?
-  //for g := 0; g < len(gids)-1; g++ {
-  //  mck.Leave(gids[g])
-  //  time.Sleep(2 * time.Second)
-  //  for i := 0; i < len(sa[g]); i++ {
-  //    sa[g][i].kill()
-  //  }
-  //  for i := 0; i < len(keys); i++ {
-  //    //v := ck.Get(keys[i])
-  //    v := string(ck.Read(keys[i], -1, 0, false))
-  //    if v != vals[i] {
-  //      t.Fatalf("leaving; wrong value; g=%v k=%v wanted=%v got=%v",
-  //        g, keys[i], vals[i], v)
-  //    }
-  //    vals[i] = strconv.Itoa(rand.Int())
-  //    //ck.Put(keys[i], vals[i])
-  //    ck.Write(keys[i], []byte(vals[i]))
-  //  }
-  //}
+  for g := 0; g < len(gids)-1; g++ {
+    mck.Leave(gids[g])
+    time.Sleep(2 * time.Second)
+    for i := 0; i < len(sa[g]); i++ {
+      sa[g][i].kill()
+    }
+    for i := 0; i < len(keys); i++ {
+      //v := ck.Get(keys[i])
+      v := string(ck.Read(keys[i], -1, 0, false))
+      if v != vals[i] {
+        t.Fatalf("leaving; wrong value; g=%v k=%v wanted=%v got=%v",
+          g, keys[i], vals[i], v)
+      }
+      vals[i] = strconv.Itoa(rand.Int())
+      //ck.Put(keys[i], vals[i])
+      ck.Write(keys[i], []byte(vals[i]), false)
+    }
+  }
 
+  fmt.Printf("  ... Passed\n")
+}
+
+func doConcurrent(t *testing.T, unreliable bool) {
+  smh, gids, ha, _, clean := setup("conc"+strconv.FormatBool(unreliable), unreliable)
+  defer clean()
+
+  mck := shardmaster.MakeClerk(smh)
+  for i := 0; i < len(gids); i++ {
+    mck.Join(gids[i], ha[i])
+  }
+
+  const npara = 11
+  var ca [npara]chan bool
+  for i := 0; i < npara; i++ {
+    ca[i] = make(chan bool)
+    go func(me int) {
+      ok := true
+      defer func() { ca[me] <- ok }()
+      ck := MakeClerk(smh)
+      mymck := shardmaster.MakeClerk(smh)
+      key := strconv.Itoa(me)
+      last := ""
+      for iters := 0; iters < 3; iters++ {
+        nv := strconv.Itoa(rand.Int())
+        v := ck.WriteHash(key, []byte(nv), false)
+        if string(v) != last {
+          ok = false
+          t.Fatalf("WriteHash(%v) expected %v got %v\n", key, last, v)
+        }
+        last = NextValue(last, nv)
+        v = ck.Read(key, -1, 0, false)
+        if string(v) != last {
+          ok = false
+          t.Fatalf("Get(%v) expected %v got %v\n", key, last, v)
+        }
+
+        mymck.Move(rand.Int() % shardmaster.NShards,
+          gids[rand.Int() % len(gids)])
+
+        time.Sleep(time.Duration(rand.Int() % 30) * time.Millisecond)
+      }
+    }(i)
+  }
+
+  for i := 0; i < npara; i++ {
+    x := <- ca[i]
+    if x == false {
+      t.Fatalf("something is wrong")
+    }
+  }
+}
+
+func TestConcurrent(t *testing.T) {
+  fmt.Printf("Test: Concurrent Put/Get/Move ...\n")
+  doConcurrent(t, false)
+  fmt.Printf("  ... Passed\n")
+}
+
+func TestConcurrentUnreliable(t *testing.T) {
+  fmt.Printf("Test: Concurrent Put/Get/Move (unreliable) ...\n")
+  doConcurrent(t, true)
   fmt.Printf("  ... Passed\n")
 }
