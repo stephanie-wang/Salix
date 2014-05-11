@@ -193,7 +193,7 @@ func (kv *ShardKV) doOp(seq int) bool {
   case Reconfig:
     reconfig := op.ReconfigArgs
     if reconfig.Num <= kv.config.Num {
-      // if we've already past this configuration, okay to return
+      // if we're already past this configuration, okay to return
       log.Printf("already past config %d on %d %d", reconfig.Num, kv.me, kv.gid)
       return true
     }
@@ -215,6 +215,7 @@ func (kv *ShardKV) doOp(seq int) bool {
     log.Printf("attempt reconfigure to", reconfig)
     kv.popularityMu.Lock()
     defer kv.popularityMu.Unlock()
+    transferArgs := make(map[int64]*ReshardArgs)
     for shard, reconfigGid := range reconfig.Shards {
       if kv.config.Shards[shard] == kv.gid &&
         reconfig.Shards[shard] != kv.gid &&
@@ -223,22 +224,19 @@ func (kv *ShardKV) doOp(seq int) bool {
         // a nonzero gid
         kv.initShardMap(shard)
 
-        //shardFiles := make([]string, len(kv.store[shard]))
-        //copy(shardFiles, kv.store[shard])
-        //shardSeen := make(map[int64]*Reply)
-        //for id, reply := range kv.seen[shard] {
-        //  shardSeen[id] = reply
-        //}
-
-        args := &ReshardArgs{
-          Num: reconfig.Num,
-          ShardNum: shard,
-          //Shard: shardFiles,
-          //Seen: shardSeen,
-          Shard: kv.store[shard],
-          Seen: kv.seen[shard],
+        transferArg, inMap := transferArgs[reconfigGid]
+        if !inMap {
+          transferArg = &ReshardArgs{
+            Num: reconfig.Num,
+            Shards: make(map[int][]string),
+            Seen: make(map[int]map[int64]*Reply),
+          }
+          transferArgs[reconfigGid] = transferArg
         }
-        go kv.transferShard(args, reconfig.Groups[reconfigGid])
+
+        transferArg.Shards[shard] = kv.store[shard]
+        transferArg.Seen[shard] = kv.seen[shard]
+
       }
 
       if !(kv.config.Shards[shard] != kv.gid &&
@@ -252,6 +250,10 @@ func (kv *ShardKV) doOp(seq int) bool {
       // reset all popularities after a reconfig
       kv.popularities[shard] = &PopularityStatus{}
     }
+    // try to transfer all shards for one group at once
+    for gid, transferArg := range transferArgs {
+      go kv.transferShard(transferArg, reconfig.Groups[gid])
+    }
 
     kv.config = *reconfig
     // record the paxos log seq for a successful reconfig
@@ -260,23 +262,26 @@ func (kv *ShardKV) doOp(seq int) bool {
 
   case Reshard:
     //log.Printf("reshard %d for config %d while on config %d on %d %d", op.ShardNum, op.Num, kv.config.Num, kv.me, kv.gid)
-
-    if op.Num <= kv.shardConfigs[op.ShardNum] {
-      // if we've already received the shard for this config number
-      log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
-      return true
+    shardReceived := true
+    for shard, _ := range op.Shards {
+      if op.Num > kv.shardConfigs[shard] {
+        shardReceived = false
+      }
+      if op.Num != kv.shardConfigs[shard] + 1 {
+        // if the shard we're receiving is more than one config away from the
+        // current shard
+        return false
+      }
     }
-    if op.Num != kv.shardConfigs[op.ShardNum] + 1 {
-      // if the shard we're receiving is more than one config away from the
-      // current shard
-      log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
-      return false
+    if shardReceived {
+      //log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
+      return true
     }
 
     if op.Num != kv.config.Num {
       // if the shard we're receiving doesn't match the config we're trying to
       // reconfigure to
-      log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
+      //log.Printf("no reshard %d on %d %d", op.ShardNum, kv.me, kv.gid)
       return false
     }
 
@@ -285,9 +290,13 @@ func (kv *ShardKV) doOp(seq int) bool {
     // make array of missing files 
     // if any files missing, request until successful
     // NOTE: cannot return false in this case because group will be out of sync
+    files := []string{}
+    for _, shardFiles := range op.Shards {
+      files = append(files, shardFiles...)
+    }
     args := &RequestFilesArgs{
       Address: kv.config.Groups[kv.gid][kv.me] + "-net",
-      Files: kv.getMissingFiles(tmpDir, op.Shard),
+      Files: kv.getMissingFiles(tmpDir, files),
       Num: op.Num,
     }
     log.Printf("resharding for config %d; need files on %d %d", args.Num, kv.me, kv.gid, args.Files)
@@ -300,28 +309,30 @@ func (kv *ShardKV) doOp(seq int) bool {
     }
 
     //copy over all files from tmp 
-    for _, filename := range op.Shard {
-      tmp, err := os.Open(path.Join(tmpDir, filename))
-      if err != nil {
-        // TODO: what to do in this case?
-        log.Println(err.Error())
+    for shard, shardFiles := range op.Shards {
+      for _, filename := range shardFiles {
+        tmp, err := os.Open(path.Join(tmpDir, filename))
+        if err != nil {
+          // TODO: what to do in this case?
+          log.Println(err.Error())
+        }
+        f, err := os.Create(kv.getFilepath(filename))
+        if err != nil {
+          // TODO: what to do in this case?
+          log.Println(err.Error())
+        }
+        io.Copy(f, tmp)
+        tmp.Close()
+        f.Close()
       }
-      f, err := os.Create(kv.getFilepath(filename))
-      if err != nil {
-        // TODO: what to do in this case?
-        log.Println(err.Error())
-      }
-      io.Copy(f, tmp)
-      tmp.Close()
-      f.Close()
+      kv.store[shard] = shardFiles
+      kv.seen[shard] = op.Seen[shard]
+      kv.shardConfigs[shard] = op.Num
     }
     // TODO: if we're not in the list of shardholders, okay to delete tmp file now!
 
     // if ok to receive this shard, take filenames, take seen requests, update
     // which config this shard belongs to
-    kv.store[op.ShardNum] = op.Shard
-    kv.seen[op.ShardNum] = op.Seen
-    kv.shardConfigs[op.ShardNum] = op.Num
     log.Printf("resharded woo for config %d on %d %d", args.Num, kv.me, kv.gid)
 
   }
@@ -330,10 +341,8 @@ func (kv *ShardKV) doOp(seq int) bool {
 }
 
 func (kv *ShardKV) getMissingFiles(root string, files []string) []string {
-  log.Printf("1 got here on %d %d", kv.me, kv.gid)
   kv.fileMu.Lock()
   defer kv.fileMu.Unlock()
-  log.Printf("2 got here on %d %d", kv.me, kv.gid)
   missing := []string{}
   for _, filename := range files {
     _, err := os.Stat(path.Join(root, filename))
@@ -465,8 +474,9 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   shardHolders := make(map[string]bool)
   for shardHolder < len(servers)/2 + 1 {
     serverAddr := servers[server % len(servers)]
-    if _, ok := shardHolders[serverAddr]; ok {
+    if _, inMap := shardHolders[serverAddr]; inMap {
       // skip servers that already have shard
+      server++
       continue
     }
     reply := &ReshardReply{
@@ -506,7 +516,6 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
           base: filename,
         }
       }
-      //kv.sendFiles(serverAddr + "-net", reply.Shard, args.Num)
       kv.sendFiles(serverAddr + "-net", filepaths, args.Num)
       attempted = true
     }
@@ -520,28 +529,24 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   }
 
   // propose reshard until successful
-  log.Printf("shard %d has files", args.ShardNum, args.Shard)
   server = 0
   for ok := false; !ok; {
     serverAddr := servers[server % len(servers)]
-    log.Printf("proposing reshard %d for config %d from %d %d to %d",
-      args.ShardNum,
-      args.Num,
-      kv.me,
-      kv.gid,
-      server % len(servers))
     var reply ReshardReply
     ok = call(serverAddr, "ShardKV.Reshard", args, &reply)
     if !ok || reply.Err == ErrWrongGroup {
       ok = false
     }
     server++
+    time.Sleep(100 * time.Millisecond)
   }
 
   // all files now transferred, so delete local copy of files
   // TODO: how are we going to do directory structure like this...
-  for _, filename := range args.Shard {
-    os.Remove(kv.getFilepath(filename))
+  for _, shardFiles := range args.Shards {
+    for _, filename := range shardFiles {
+      os.Remove(kv.getFilepath(filename))
+    }
   }
 
 }
@@ -560,12 +565,14 @@ func (kv *ShardKV) RequestFiles(args *RequestFilesArgs, reply *Reply) error {
 }
 
 func (kv *ShardKV) MissingFiles(args *ReshardArgs, reply *ReshardReply) error {
-  reply.Shard = kv.getMissingFiles(kv.getTmpPathname(args.Num), args.Shard)
+  for _, files := range args.Shards {
+    missing := kv.getMissingFiles(kv.getTmpPathname(args.Num), files)
+    reply.Shard = append(reply.Shard, missing...)
+  }
   return nil
 }
 
 func (kv *ShardKV) sendFiles(dst string, files []*Filepath, config int) {
-  // NOTE: not sure if fileMu.lock is needed here...don't think so
   for _, filepath := range files {
     conn, err := net.Dial("unix", dst)
     if err != nil {
@@ -610,6 +617,11 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
   size, _ := strconv.Atoi(splitMeta[1])
   filename := strings.Join(splitMeta[2:], " ")
 
+  if kv.config.Num != config {
+    log.Printf("on %d not ready to receive file %s config %d on %d %d", kv.config.Num, filename, config, kv.me, kv.gid)
+    return
+  }
+
   log.Println("receiving file on", kv.me, kv.gid, config, filename)
   tmpDir := kv.getTmpPathname(config)
 
@@ -626,8 +638,6 @@ func (kv *ShardKV) receiveFile(conn net.Conn) {
     log.Println(err.Error())
   }
 
-  //w := io.MultiWriter(os.Stdout, f)
-  //n, err := io.Copy(w, reader)
   n, err := io.Copy(f, reader)
 
   if size != int(n) {
@@ -674,10 +684,9 @@ func (kv *ShardKV) tick() {
     return
   }
 
-  kv.lastConfig = query.Num
-  if query.Num <= kv.config.Num {
-    return
-  }
+  //if query.Num <= kv.config.Num {
+  //  return
+  //}
 
   go func() {
     op := Op{
@@ -690,6 +699,7 @@ func (kv *ShardKV) tick() {
       return kv.proposeOp(op)
     })
   }()
+  kv.lastConfig = query.Num
 }
 
 func (kv *ShardKV) popularityPing() {
@@ -719,7 +729,7 @@ func (kv *ShardKV) Reshard(args *ReshardArgs, reply *Reply) error {
     ReshardArgs: *args,
     Id: nrand(),
   }
-  log.Printf("received reshard %d op %d %d", op.ShardNum, kv.me, kv.gid)
+  //log.Printf("received reshard %d op %d %d", op.ShardNum, kv.me, kv.gid)
   ok := kv.proposeOp(op)
   if !ok {
     reply.Err = ErrWrongGroup
@@ -734,15 +744,13 @@ func (kv *ShardKV) proposeOp(op Op) bool {
   is successfully executed
   Return success
   */
-  log.Printf("1 got here proposing on %d %d", kv.me, kv.gid)
   kv.mu.Lock()
   defer kv.mu.Unlock()
-  log.Printf("2 got here proposing on %d %d", kv.me, kv.gid)
   for proposed := false; !proposed; {
     // propose the op until the op decided by paxos matches ours
     // lock to prevent other ops from being proposed w/same seq
     if op.Type == Reshard {
-      log.Printf("proposing reshard %d for seq %d on %d %d", op.ShardNum, kv.seq, kv.me, kv.gid)
+      //log.Printf("proposing reshard %d for seq %d on %d %d", op.ShardNum, kv.seq, kv.me, kv.gid)
     }
     kv.px.Start(kv.seq, op)
     kv.wait(func() bool {
@@ -758,6 +766,7 @@ func (kv *ShardKV) proposeOp(op Op) bool {
     }
     kv.seq++
   }
+  log.Printf("decided op %d on %d %d", kv.seq, kv.me, kv.gid)
 
   // execute up to the op and check if successful
   var success bool
@@ -916,7 +925,11 @@ func StartServer(gid int64, shardmasters []string,
         // discard the request.
         conn.Close()
       }
-      go kv.receiveFile(conn)
+      //go func(c net.Conn) {
+      //  kv.mu.Lock()
+        kv.receiveFile(conn)
+      //  kv.mu.Unlock()
+      //}(conn)
     }
   }()
 
