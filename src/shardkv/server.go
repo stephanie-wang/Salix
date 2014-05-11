@@ -39,6 +39,7 @@ type Op struct {
 
 type ShardKV struct {
   mu sync.Mutex
+  logMu sync.Mutex
   fileMu sync.Mutex
   popularityMu sync.Mutex
   tickMu sync.Mutex
@@ -76,6 +77,10 @@ type ShardKV struct {
   // map of config number -> paxos seq of corresponding reconfig op
   reconfigs map[int]int
   cleanedConfig int
+
+  // map of config number -> map of gid -> reshard args for shards that we're
+  // still waiting to transfer to that gid
+  shardsToTransfer map[int]map[int64]*ReshardArgs
 }
 
 
@@ -181,6 +186,9 @@ func (kv *ShardKV) doOp(seq int) bool {
     // for each config number, record the earliest successful paxos sequence
     // number, so we can clean up the tmp files once everyone is past this
     if _, inMap := kv.reconfigs[op.Num]; !inMap && success {
+      kv.logMu.Lock()
+      logReconfig(kv.getFilepath(Maps), op.Num, seq)
+      defer kv.logMu.Unlock()
       kv.reconfigs[op.Num] = seq
     }
 
@@ -242,7 +250,12 @@ func (kv *ShardKV) write(filename string, buf []byte, doAppend bool) (int, Err) 
 
   if !kv.exists(kv.getFilepath(filename)) {
     DPrintf("adding file %s to shard %s", filename, shard)
-    kv.store[shard] = append(kv.store[shard], filename)
+    files := append(kv.store[shard], filename)
+    kv.logMu.Lock()
+    logStore(kv.getFilepath(Maps), shard, files)
+    kv.logMu.Unlock()
+    kv.store[shard] = files
+    //kv.store[shard] = append(kv.store[shard], filename)
   }
 
   var f *os.File
@@ -300,8 +313,23 @@ func (kv *ShardKV) doFileOp(op Op) bool {
     if err != nil {
       reply.Err = Err(err.Error())
     }
+    files := kv.store[shard]
+    for i, filename := range files {
+      if op.File == filename {
+        //kv.store[shard] = append(files[:i], files[i+1:]...)
+        files = append(files[:i], files[i+1:]...)
+        break
+      }
+    }
+    kv.logMu.Lock()
+    logStore(kv.getFilepath(Maps), shard, files)
+    kv.logMu.Unlock()
+    kv.store[shard] = files
   }
   // save the reply
+  kv.logMu.Lock()
+  logSeen(kv.getFilepath(Maps), shard, op.Id, &reply)
+  kv.logMu.Unlock()
   kv.seen[shard][op.Id] = &reply
   return true
 }
@@ -368,9 +396,12 @@ func (kv *ShardKV) doReconfig(op Op) bool {
   }
   // try to transfer all shards for one group at once
   for gid, transferArg := range transferArgs {
-    go kv.transferShard(transferArg, reconfig.Groups[gid])
+    go kv.transferShard(transferArg, reconfig.Groups[gid], gid)
   }
 
+  kv.logMu.Lock()
+  appendConfig(kv.getFilepath(Configs), reconfig)
+  kv.logMu.Unlock()
   kv.config = *reconfig
   // record the paxos log seq for a successful reconfig
   DPrintf("new config on %d %d is %d", kv.me, kv.gid, kv.config.Num)
@@ -417,10 +448,10 @@ func (kv *ShardKV) doReshard(op Op) bool {
   DPrintf("resharding for config %d; need files on %d %d", args.Num, kv.me, kv.gid, args.Files)
   for server := 0; len(args.Files) > 0; server++ {
     serverAddr := op.ShardHolders[server % len(op.ShardHolders)]
-    log.Println("requesting files from server %s", serverAddr)
+    DPrintf("requesting files from server %s", serverAddr)
     call(serverAddr, "ShardKV.RequestFiles", args, &Reply{})
     args.Files = kv.getMissingFiles(tmpDir, args.Files)
-    log.Println("still missing files", args.Files)
+    DPrintf("still missing files", args.Files)
   }
 
   isShardholder := false
@@ -453,6 +484,13 @@ func (kv *ShardKV) doReshard(op Op) bool {
         }
       }
     }
+    kv.logMu.Lock()
+    logStore(kv.getFilepath(Maps), shard, shardFiles)
+    for req, reply := range op.Seen[shard] {
+      logSeen(kv.getFilepath(Maps), shard, req, reply)
+    }
+    kv.logMu.Unlock()
+
     kv.store[shard] = shardFiles
     kv.seen[shard] = op.Seen[shard]
     kv.shardConfigs[shard] = op.Num
@@ -516,12 +554,20 @@ func (kv *ShardKV) getTmpPathname(configNum int) string {
   return tmpDir
 }
 
-func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
+func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string, gid int64) {
   /*
   Try to transfer a shard to one of the servers until that server responds ok
   Receiving server might not be in the right group yet, according to sender's
   config, so will send back ErrWrongGroup if it's not ready for this shard yet
   */
+
+  kv.logMu.Lock()
+  logShardsToTransfer(kv.getFilepath(Maps), args.Num, gid, args)
+  kv.logMu.Unlock()
+  if _, inMap := kv.shardsToTransfer[args.Num]; !inMap {
+    kv.shardsToTransfer[args.Num] = make(map[int64]*ReshardArgs)
+  }
+  kv.shardsToTransfer[args.Num][gid] = args
 
   // keep transferring until a majority of servers have files they need
   attempted := false
@@ -605,6 +651,10 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
     }
   }
 
+  kv.logMu.Lock()
+  logShardsToTransfer(kv.getFilepath(Maps), args.Num, gid, nil)
+  kv.logMu.Unlock()
+  delete (kv.shardsToTransfer[args.Num], gid)
 }
 
 func (kv *ShardKV) RequestFiles(args *RequestFilesArgs, reply *Reply) error {
@@ -754,10 +804,6 @@ func (kv *ShardKV) tick() {
     return
   }
 
-  //if query.Num <= kv.config.Num {
-  //  return
-  //}
-
   go func() {
     op := Op{
       Type: Reconfig,
@@ -769,6 +815,10 @@ func (kv *ShardKV) tick() {
       return kv.proposeOp(op)
     })
   }()
+
+  kv.logMu.Lock()
+  logLiterals(kv.getFilepath(Literals), "lastConfig", query.Num)
+  kv.logMu.Unlock()
   kv.lastConfig = query.Num
 }
 
@@ -830,6 +880,9 @@ func (kv *ShardKV) proposeOp(op Op) bool {
     } else {
       proposed = op.Id == decidedOp.Id
     }
+    kv.logMu.Lock()
+    logLiterals(kv.getFilepath(Literals), "seq", kv.seq + 1)
+    kv.logMu.Unlock()
     kv.seq++
   }
   DPrintf("decided op %d on %d %d", kv.seq, kv.me, kv.gid)
@@ -838,6 +891,9 @@ func (kv *ShardKV) proposeOp(op Op) bool {
   var success bool
   for kv.current < kv.seq {
     success = kv.doOp(kv.current)
+    kv.logMu.Lock()
+    logLiterals(kv.getFilepath(Literals), "current", kv.current + 1)
+    kv.logMu.Unlock()
     kv.current++
   }
   //finished interpreting up until current so ok to discard
@@ -882,8 +938,35 @@ func (kv *ShardKV) cleanTmp() {
       log.Println(err)
     }
     DPrintf("cleaned %s", tmpDir)
+    kv.logMu.Lock()
+    logLiterals(kv.getFilepath(Literals), "cleanedConfig", kv.cleanedConfig + 1)
+    kv.logMu.Unlock()
     kv.cleanedConfig++
   }
+}
+
+func (kv *ShardKV) checkpoint() {
+  kv.mu.Lock()
+  defer kv.mu.Unlock()
+  kv.logMu.Lock()
+  defer kv.logMu.Unlock()
+
+  index := doCheckpoint(kv.getFilepath(Maps), kv.store, kv.seen, kv.reconfigs, kv.shardsToTransfer)
+  logLiterals(kv.getFilepath(Literals), Maps, index)
+}
+
+func (kv *ShardKV) recoverMemory() {
+  kv.mu.Lock()
+  defer kv.mu.Unlock()
+  kv.logMu.Lock()
+  defer kv.logMu.Unlock()
+
+  literals := recoverLiterals(kv.getFilepath(Literals))
+  kv.seq = literals["seq"]
+  kv.current = literals["current"]
+  kv.lastConfig = literals["lastConfig"]
+  kv.cleanedConfig = literals["cleanedConfig"]
+  kv.store, kv.seen, kv.reconfigs, kv.shardsToTransfer = recoverMaps(kv.getFilepath(Maps), literals[Maps])
 }
 
 //
@@ -917,6 +1000,7 @@ func StartServer(gid int64, shardmasters []string,
     kv.popularities[i] = &PopularityStatus{}
   }
   kv.reconfigs = make(map[int]int)
+  kv.shardsToTransfer = make(map[int]map[int64]*ReshardArgs)
 
   kv.root = servers[me] + "-root"
   os.MkdirAll(path.Join(kv.root, "tmp"), 0777)
@@ -980,6 +1064,14 @@ func StartServer(gid int64, shardmasters []string,
         kv.popularityPing()
       }
       time.Sleep(5000 * time.Millisecond)
+    }
+  }()
+
+  go func() {
+    for kv.dead == false {
+      time.Sleep(3 * time.Second)
+      kv.checkpoint()
+      //kv.recoverMemory()
     }
   }()
 
