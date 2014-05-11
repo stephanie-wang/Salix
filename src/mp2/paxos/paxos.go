@@ -200,9 +200,6 @@ func (px *Paxos) leader(view int) int {
 }
 
 func (px *Paxos) lowestUndecided() int {
-  px.mu.Lock()
-  defer px.mu.Unlock()
-
   slot := 0
   for {
     inst := px.GetInstance(slot)
@@ -221,106 +218,123 @@ func (px *Paxos) preparer(view int) {
   Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
   
   for !px.dead {
-    //this breaks code
-    //px.mu2.Lock()
-    //defer px.mu2.Unlock()
-  
-    if px.view >= view {
-      return
-    }
-
-    //send Prepare to all peers
-    var numPrepareOks int = 0
-    var numPrepareRejects int = 0
-    lowestUndecided := px.lowestUndecided()
-    replies := make([]PrepareReply, 0)
-    
-    for i:=0; i<px.numPeers && !px.dead; i++ {
-      prepareArgs := PrepareArgs{}
-      prepareArgs.View = view;
-      prepareArgs.LowestUndecided = lowestUndecided
-      prepareArgs.Me = px.me
-      prepareReply := PrepareReply{}
-      
-      if !px.Call2(px.peers[i], "Paxos.Prepare", prepareArgs, &prepareReply) {
-        //treat RPC failure as prepareReject
-        numPrepareRejects = numPrepareRejects + 1
-      } else {
-        px.fdHearFrom(i)
-        if prepareReply.Ok {
-          numPrepareOks = numPrepareOks + 1
-          replies = append(replies, prepareReply)
-        } else if prepareReply.View > px.view {     //TODO: might not be needed
-          //someone else became leader
-          return;
-        }
-      }
-      
-      //abort early if enough oks or too many rejects/failures
-      if numPrepareOks >= px.majority || numPrepareRejects > px.numPeers - px.majority {
-        break
-      }
-    }
-    
-    if numPrepareOks >= px.majority {
-      px.mu.Lock()
-      
-      px.view = view
-      
-      //changed := make([]int, 0) //for debugging
-      
-      for _, reply := range replies {
-        if reply.Accepted != nil {
-          for slot, recvd := range reply.Accepted {
-            inst := px.GetInstance(slot)
-            inst.mu.Lock()
-            
-            if !inst.Decided {
-              if !inst.Accepted ||
-                   //recvd.Decided ||
-                   (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
-
-                //don't overwrite my decided value!
-                inst.Accepted = recvd.Accepted
-                inst.View_a = recvd.View_a
-                inst.V_a = recvd.V_a
-                
-                //changed = append(changed, slot)
-              }
-            }
-            
-            inst.mu.Unlock()
-          }
-        }
-      }
-      
-/*
-      for _, slot := range changed {
-        inst := px.GetInstance(slot)
-        inst.mu.Lock()
-        //inst.View_a = view  //new view
-        
-        //log.Printf("***[%v][view=%v] highest accept seq=%v, val=%v, view_a=%v preparer(view=%v)\n", px.me, inst.View_a, slot, inst.V_a, px.view, view)
-        
-        inst.mu.Unlock()
-      }
-*/
-      
-      //start each accepted instance that I didn't know about
-      for slot, inst := range px.instances {
-        inst.mu.Lock()        
-        if (inst.Accepted && !inst.Decided) {
-          go px.Start(slot, inst.V_a) //TODO: might be a bug
-          //do that in thread so I don't have to give up px.mu
-        }
-        inst.mu.Unlock()
-      }
-      
-      px.mu.Unlock()
-      
-      return
+    px.mu.Lock()
+    x := px.preparer_iteration(view)
+    px.mu.Unlock()
+    if !x {
+      break
     }
   }
+}
+
+//returns true for continue
+func (px *Paxos) preparer_iteration(view int) bool {
+  //this breaks code
+  //px.mu2.Lock()
+  //defer px.mu2.Unlock()
+
+  //px.mu.Lock()
+  //defer px.mu.Unlock()
+
+  if px.view >= view {
+    return false
+  }
+
+  //send Prepare to all peers
+  var numPrepareOks int = 0
+  var numPrepareRejects int = 0
+  lowestUndecided := px.lowestUndecided()
+  replies := make([]PrepareReply, 0)
+  
+  for i:=0; i<px.numPeers && !px.dead; i++ {
+    prepareArgs := PrepareArgs{}
+    prepareArgs.View = view;
+    prepareArgs.LowestUndecided = lowestUndecided
+    prepareArgs.Me = px.me
+    prepareReply := PrepareReply{}
+    
+    if !px.Call2(px.peers[i], "Paxos.Prepare", prepareArgs, &prepareReply) {
+      //treat RPC failure as prepareReject
+      numPrepareRejects = numPrepareRejects + 1
+    } else {
+      px.fdHearFrom(i)
+      if prepareReply.Ok {
+        numPrepareOks = numPrepareOks + 1
+        replies = append(replies, prepareReply)
+      } else if prepareReply.View > px.view {     //TODO: might not be needed
+        //someone else became leader
+        return false
+      }
+    }
+    
+    //abort early if enough oks or too many rejects/failures
+    if numPrepareOks >= px.majority || numPrepareRejects > px.numPeers - px.majority {
+      break
+    }
+  }
+  
+  if numPrepareOks >= px.majority {
+    //px.mu.Lock()
+    
+    px.view = view
+    
+    //changed := make([]int, 0) //for debugging
+    
+    for _, reply := range replies {
+      if reply.Accepted != nil {
+        for slot, recvd := range reply.Accepted {
+          inst := px.GetInstance(slot)
+          inst.mu.Lock()
+          
+          if !inst.Decided {
+            if !inst.Accepted ||
+                 //recvd.Decided ||
+                 (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
+
+              //don't overwrite my decided value!
+              inst.Accepted = recvd.Accepted
+              inst.View_a = recvd.View_a
+              inst.V_a = recvd.V_a
+              
+              //changed = append(changed, slot)
+            }
+          }
+          
+          inst.mu.Unlock()
+        }
+      }
+    }
+    
+/*
+    for _, slot := range changed {
+      inst := px.GetInstance(slot)
+      inst.mu.Lock()
+      //inst.View_a = view  //new view
+      
+      //log.Printf("***[%v][view=%v] highest accept seq=%v, val=%v, view_a=%v preparer(view=%v)\n", px.me, inst.View_a, slot, inst.V_a, px.view, view)
+      
+      inst.mu.Unlock()
+    }
+*/
+    
+    //start each accepted instance that I didn't know about
+    px.dataMu.Lock()
+    for slot, inst := range px.instances {
+      inst.mu.Lock()        
+      if (inst.Accepted && !inst.Decided) {
+        go px.Start(slot, inst.V_a) //TODO: might be a bug
+        //do that in thread so I don't have to give up px.mu
+      }
+      inst.mu.Unlock()
+    }
+    px.dataMu.Unlock()
+    
+    //px.mu.Unlock()
+    
+    return false
+  }
+  
+  return true
 }
 
 func (px *Paxos) driver(seq int, v interface{}) {
@@ -463,12 +477,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     //the highest View_a of an instance
     reply.Accepted = make(map[int]PaxosInstance)
     
-    //if args.Me != px.me {
-    //  px.mu.Lock()
-    //  defer px.mu.Unlock()
-    //}
-    
-    px.mu.Lock()
+    px.dataMu.Lock()
     for slot,inst := range px.instances {
       inst.mu.Lock()
       if slot >= args.LowestUndecided && inst.Accepted {
@@ -476,7 +485,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
       }
       inst.mu.Unlock()
     }
-    px.mu.Unlock()
+    px.dataMu.Unlock()
     
     reply.Ok = true
   } else {
@@ -495,11 +504,6 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   px.fdHearFrom(args.Me)
   
   inst := px.GetInstance(args.Seq)
-  
-  //if args.Me != px.me {
-  //  px.mu.Lock()
-  //  defer px.mu.Unlock()
-  //}
   
   inst.mu.Lock()
 
@@ -593,9 +597,9 @@ func (px *Paxos) Start(seq int, v interface{}) int {
 
 func (px *Paxos) FreeMemory(keepAtLeast int) {
   for i:=0; i<keepAtLeast; i++ {
-    px.mu.Lock()
+    px.dataMu.Lock()
     delete(px.instances, i)
-    px.mu.Unlock()
+    px.dataMu.Unlock()
   }
 }
 
@@ -606,11 +610,11 @@ func (px *Paxos) FreeMemory(keepAtLeast int) {
 // see the comments for Min() for more explanation.
 //
 func (px *Paxos) Done(seq int) {
-  px.mu.Lock()
+  px.dataMu.Lock()
   if seq > px.doneVals[px.me] {
     px.doneVals[px.me] = seq
   }
-  px.mu.Unlock()
+  px.dataMu.Unlock()
   
   px.Min()  //this will force a free memory
 }
@@ -653,14 +657,14 @@ func (px *Paxos) Max() int {
 // instances.
 // 
 func (px *Paxos) Min() int {
-  px.mu.Lock()
+  px.dataMu.Lock()
   minDoneVal := math.MaxInt32
   for i:=0; i<px.numPeers; i++ {
     if px.doneVals[i] < minDoneVal {
       minDoneVal = px.doneVals[i]
     }
   }
-  px.mu.Unlock()
+  px.dataMu.Unlock()
   
   retVal := 1 + minDoneVal
   px.FreeMemory(retVal)
@@ -676,9 +680,9 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
-  px.mu.Lock()
+  px.dataMu.Lock()
   inst, ok := px.instances[seq]
-  px.mu.Unlock()
+  px.dataMu.Unlock()
   
   var retDecided bool = false
   var retVal interface{} = nil
