@@ -66,6 +66,7 @@ type Paxos struct {
 
   mu2 sync.RWMutex  //used to make sure no proposals during election?
   
+  dataMu sync.Mutex
   view int
   instances map[int]*PaxosInstance  //Paxos instances
   max int // number returned by Max()  
@@ -174,13 +175,9 @@ type DecidedReply struct {
 
 // returns px.instances[seq], creating it if necessary
 func (px *Paxos) GetInstance(seq int) *PaxosInstance {
-  px.mu.Lock()
-  defer px.mu.Unlock()
+  px.dataMu.Lock()
+  defer px.dataMu.Unlock()
 
-  return px.GetInstanceNoLock(seq)
-}
-
-func (px *Paxos) GetInstanceNoLock(seq int) *PaxosInstance {
   _, ok := px.instances[seq]
   if !ok {
     px.instances[seq] = MakeInstance()
@@ -190,8 +187,8 @@ func (px *Paxos) GetInstanceNoLock(seq int) *PaxosInstance {
 
 // merge doneVals (received via RPC) with local doneVals
 func (px *Paxos) MergeDoneVals(doneVal int, from int) {
-  px.mu.Lock()
-  defer px.mu.Unlock()
+  px.dataMu.Lock()
+  defer px.dataMu.Unlock()
     
   if doneVal > px.doneVals[from] {
     px.doneVals[from] = doneVal
@@ -208,7 +205,7 @@ func (px *Paxos) lowestUndecided() int {
 
   slot := 0
   for {
-    inst := px.GetInstanceNoLock(slot)
+    inst := px.GetInstance(slot)
     inst.mu.Lock()
     defer inst.mu.Unlock()
     if !inst.Decided {
@@ -221,7 +218,7 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
-  log.Printf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
   
   for !px.dead {
     //this breaks code
@@ -275,7 +272,7 @@ func (px *Paxos) preparer(view int) {
       for _, reply := range replies {
         if reply.Accepted != nil {
           for slot, recvd := range reply.Accepted {
-            inst := px.GetInstanceNoLock(slot)
+            inst := px.GetInstance(slot)
             inst.mu.Lock()
             
             if !inst.Decided {
@@ -299,7 +296,7 @@ func (px *Paxos) preparer(view int) {
       
 /*
       for _, slot := range changed {
-        inst := px.GetInstanceNoLock(slot)
+        inst := px.GetInstance(slot)
         inst.mu.Lock()
         //inst.View_a = view  //new view
         
@@ -327,7 +324,7 @@ func (px *Paxos) preparer(view int) {
 }
 
 func (px *Paxos) driver(seq int, v interface{}) {
-  //log.Printf("***[%v][view=%v] driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
+  Dprintf("***[%v][view=%v] driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
   
   inst := px.GetInstance(seq)
   
@@ -360,7 +357,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
   inst.mu.Unlock()
   px.mu.Unlock()
   
-  //log.Printf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
+  //Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
   
   //send Accept to all peers
   numAcceptOks := 0
@@ -506,7 +503,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   
   inst.mu.Lock()
 
-  if args.View == px.view {
+  if args.View >= px.view {
     Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     
     px.view = args.View
@@ -533,7 +530,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     return nil
   }
   
-  //log.Printf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   px.fdHearFrom(args.Me)
   
@@ -581,11 +578,9 @@ func (px *Paxos) Start(seq int, v interface{}) int {
   px.startMu.Lock()
   defer px.startMu.Unlock()
   
-  px.mu.Lock()
   if seq > px.max {
     px.max = seq
   }
-  px.mu.Unlock()
   
   _, ok := px.started[seq]
   if !ok {
