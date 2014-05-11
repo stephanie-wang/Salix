@@ -169,6 +169,7 @@ func (kv *ShardKV) doOp(seq int) bool {
       return true
     }
 
+
     kv.initShardMap(shard)
     var reply Reply
     if op.Type == Read {
@@ -259,7 +260,7 @@ func (kv *ShardKV) doOp(seq int) bool {
     log.Printf("new config on %d %d is %d", kv.me, kv.gid, kv.config.Num)
 
   case Reshard:
-    log.Printf("reshard %d for config %d while on config %d on %d %d", op.ShardNum, op.Num, kv.config.Num, kv.me, kv.gid)
+    //log.Printf("reshard %d for config %d while on config %d on %d %d", op.ShardNum, op.Num, kv.config.Num, kv.me, kv.gid)
 
     if op.Num <= kv.shardConfigs[op.ShardNum] {
       // if we've already received the shard for this config number
@@ -340,6 +341,9 @@ func (kv *ShardKV) getMissingFiles(root string, files []string) []string {
 }
 
 func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (int, Err) {
+  kv.fileMu.Lock()
+  defer kv.fileMu.Unlock()
+
   shard := key2shard(filename)
   kv.popularityMu.Lock()
   if stale {
@@ -364,6 +368,9 @@ func (kv *ShardKV) readAt(filename string, buf []byte, off int64, stale bool) (i
 
 
 func (kv *ShardKV) write(filename string, buf []byte) (int, Err) {
+  kv.fileMu.Lock()
+  defer kv.fileMu.Unlock()
+
   shard := key2shard(filename)
   kv.popularityMu.Lock()
   kv.popularities[shard].writes++
@@ -393,6 +400,7 @@ func (kv *ShardKV) write(filename string, buf []byte) (int, Err) {
 }
 
 func initReadBuffer(filename string, bytes int, reply *Reply) {
+
   var size int
   if bytes == -1 {
     f, err := os.Open(filename)
@@ -513,7 +521,7 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
   server = 0
   for ok := false; !ok; {
     serverAddr := servers[server % len(servers)]
-    log.Printf("transferring shard %d for config %d from %d %d to %d",
+    log.Printf("proposing reshard %d for config %d from %d %d to %d",
       args.ShardNum,
       args.Num,
       kv.me,
@@ -525,7 +533,6 @@ func (kv *ShardKV) transferShard(args *ReshardArgs, servers []string) {
       ok = false
     }
     server++
-    
   }
 
   // all files now transferred, so delete local copy of files
@@ -665,6 +672,11 @@ func (kv *ShardKV) tick() {
     return
   }
 
+  kv.lastConfig = query.Num
+  if query.Num <= kv.config.Num {
+    return
+  }
+
   go func() {
     op := Op{
       Type: Reconfig,
@@ -676,16 +688,15 @@ func (kv *ShardKV) tick() {
       return kv.proposeOp(op)
     })
   }()
-  kv.lastConfig = query.Num
 }
 
 func (kv *ShardKV) popularityPing() {
+  kv.mu.Lock()
+  defer kv.mu.Unlock()
   kv.popularityMu.Lock()
   defer kv.popularityMu.Unlock()
   // don't allow reconfigs during a ping
   // is this safe from deadlock?
-  kv.mu.Lock()
-  defer kv.mu.Unlock()
 
   popularities := make(map[int]int)
   for shard, gid := range kv.config.Shards {
@@ -706,6 +717,7 @@ func (kv *ShardKV) Reshard(args *ReshardArgs, reply *Reply) error {
     ReshardArgs: *args,
     Id: nrand(),
   }
+  log.Printf("received reshard %d op %d %d", op.ShardNum, kv.me, kv.gid)
   ok := kv.proposeOp(op)
   if !ok {
     reply.Err = ErrWrongGroup
@@ -725,6 +737,9 @@ func (kv *ShardKV) proposeOp(op Op) bool {
   for proposed := false; !proposed; {
     // propose the op until the op decided by paxos matches ours
     // lock to prevent other ops from being proposed w/same seq
+    if op.Type == Reshard {
+      log.Printf("proposing reshard %d for seq %d on %d %d", op.ShardNum, kv.seq, kv.me, kv.gid)
+    }
     kv.px.Start(kv.seq, op)
     kv.wait(func() bool {
       decided, _ := kv.px.Status(kv.seq)
@@ -782,8 +797,12 @@ func (kv *ShardKV) cleanTmp() {
     //  - next config is in log and all instances have applied 
     // then it's okay to delete the tmp files for the previous config
     tmpDir := kv.getTmpPathname(kv.cleanedConfig - 1)
-    os.Remove(tmpDir)
-    log.Printf("cleaned tmp files for config %d", kv.cleanedConfig - 1)
+    log.Println(tmpDir)
+    err := os.RemoveAll(tmpDir)
+    if err != nil {
+      log.Println(err)
+    }
+    log.Printf("cleaned %s", tmpDir)
     kv.cleanedConfig++
   }
 }
@@ -870,7 +889,7 @@ func StartServer(gid int64, shardmasters []string,
     for kv.dead == false {
       kv.tick()
       kv.popularityPing()
-      //kv.cleanTmp()
+      kv.cleanTmp()
       time.Sleep(250 * time.Millisecond)
     }
   }()
