@@ -31,7 +31,7 @@ import "math/rand"
 import "math"
 import "time"
 
-var Debug int = 1
+var Debug int = 0
 
 func Dprintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -50,7 +50,7 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-var FAILURE_DETECTOR_TO = 100  //ms
+var FAILURE_DETECTOR_TO = 300  //ms
 
 type FakeMu struct {
 }
@@ -405,6 +405,8 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
   inst.mu.Lock()
   if inst.Accepted {
     v_prime = inst.V_a
+  } else if inst.Decided {
+    v_prime = inst.DecidedVal
   }
   inst.mu.Unlock()
   px.mu.Unlock()
@@ -846,7 +848,7 @@ func (px *Paxos) fdOnFail(view int) {
     return             //avoid starting new thread
   }
   
-  px.viewMu.Unlock()
+  
   px.fdInstalledView = view
   go px.preparer(view)
 }
