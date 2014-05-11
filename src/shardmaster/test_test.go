@@ -2,7 +2,6 @@
 // This test suite contains tests relevant to the shardmaster's configuration changes
 // it includes original tests (Basic, Unreliable, FreshQuery).
 // It also contains a Rebalance test that checks the loadbalancing algorithm used.
-// TODO: Completely integrated test with popularity updates & load balancing
 // 
 package shardmaster
 
@@ -230,7 +229,7 @@ func TestRebalance(t *testing.T){
   newPops2 := make(map[int]int)
   newPops3 := make(map[int]int)
 
-  // assume shards that group 1 is seving become really popular
+  // assume shards that group 1 is serving become really popular
   // but none of the other ones do
   for i, gid := range current.Shards {
     if gid == gid1 {
@@ -280,7 +279,7 @@ func TestRebalance(t *testing.T){
 
   ck.PopularityPing(newPops1, newConfig.Num, 1, gid1)
   if ck.Query(-1).Num != newConfig.Num {
-    t.Fatalf("Rebalanced too soon after a change")
+    t.Fatalf("Rebalanced too soon after a change.")
   }
 
   fmt.Printf("  ... Passed\n")
