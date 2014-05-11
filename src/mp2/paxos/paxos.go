@@ -50,7 +50,7 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-var FAILURE_DETECTOR_TO = 100  //ms
+var FAILURE_DETECTOR_TO = 200  //ms
 
 type Paxos struct {
   mu sync.Mutex
@@ -201,11 +201,12 @@ func (px *Paxos) leader(view int) int {
 
 func (px *Paxos) lowestUndecided() int {
   slot := 0
-  for {
+  for !px.dead {
     inst := px.GetInstance(slot)
     inst.mu.Lock()
-    defer inst.mu.Unlock()
-    if !inst.Decided {
+    x := inst.Decided
+    inst.mu.Unlock()
+    if !x {
       return slot
     }
     slot += 1
@@ -215,9 +216,9 @@ func (px *Paxos) lowestUndecided() int {
 }
 
 func (px *Paxos) preparer(view int) {
-  Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
-  
   for !px.dead {
+    Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
+    
     px.mu.Lock()
     x := px.preparer_iteration(view)
     px.mu.Unlock()
@@ -508,7 +509,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   inst.mu.Lock()
 
   if args.View >= px.view {
-    Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+    //Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
     
     px.view = args.View
     inst.View_a = args.View
@@ -534,7 +535,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     return nil
   }
   
-  Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
+  //Dprintf("***[%v][view=%v] onDecided(args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.Seq, valStr(args.V), args.Me)
   
   px.fdHearFrom(args.Me)
   
@@ -563,7 +564,7 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   if inst.Decided {
     reply.Decided = true
     reply.DecidedVal = inst.DecidedVal
-    Dprintf("***[%v][view=%v] found! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
+    //Dprintf("***[%v][view=%v] found! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
   }
   inst.mu.Unlock()
   

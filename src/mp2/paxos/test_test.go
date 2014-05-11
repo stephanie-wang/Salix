@@ -94,6 +94,7 @@ func checkmax(t *testing.T, pxa[]*Paxos, seq int, max int) {
 }
 
 func cleanup(pxa []*Paxos) {
+  fmt.Println("******************** CLEANUP *********************")
   for i := 0; i < len(pxa); i++ {
     if pxa[i] != nil {
       pxa[i].Kill()
@@ -274,7 +275,7 @@ func TestDeaf(t *testing.T) {
   os.Remove(pxh[0])
   os.Remove(pxh[npaxos-1])
 
-  Debug = 1
+  Debug = 0
 
   fmt.Println("------------------------------------------")
   startByClientWithDeafServers(1, pxa, 1, "goodbye", deaf)
