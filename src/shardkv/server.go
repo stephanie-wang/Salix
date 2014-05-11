@@ -816,7 +816,7 @@ func (kv *ShardKV) cleanTmp() {
 // Me is the index of this server in servers[].
 //
 func StartServer(gid int64, shardmasters []string,
-                 servers []string, me int) *ShardKV {
+                 servers []string, me int, doLoadBalance bool) *ShardKV {
   gob.Register(Op{})
 
   kv := new(ShardKV)
@@ -887,7 +887,9 @@ func StartServer(gid int64, shardmasters []string,
   go func() {
     for kv.dead == false {
       kv.tick()
-      kv.popularityPing()
+      if doLoadBalance {
+        kv.popularityPing()
+      }
       kv.cleanTmp()
       time.Sleep(250 * time.Millisecond)
     }
