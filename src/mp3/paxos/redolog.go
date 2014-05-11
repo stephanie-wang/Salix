@@ -1,85 +1,119 @@
 package paxos
 
 import "os"
+import "log"
+import "encoding/json"
+import "bufio"
+import "fmt"
 
 const (
-	KIND_GO_START = iota
-  KIND_ADVANCE_VIEW = iota
-  KIND_UPDATE_INSTANCE = iota
+	KIND_GO_START = "GoStart"
+  KIND_ADVANCE_VIEW = "AdvanceView"
+  KIND_UPDATE_INSTANCE = "UpdateInstance"
 )
 
 type Record interface {
-  Kind() int
   Apply(px *Paxos)
 }
 
-//Record: GoStart --------------------------
-
-type GoStart struct {
-  KindEnum int
+type GenericRecord struct {
+  Kind string
 }
 
-func MakeGoStart() *GoStart {
+///////////////////////////////////////
+
+type GoStart struct {
+  Kind string
+  Seq int
+  V interface{}
+}
+
+func MakeGoStart(seq int, v interface{}) *GoStart {
   return &GoStart {
-    KindEnum: KIND_GO_START,
+    Kind: KIND_GO_START,
+    Seq: seq,
+    V: v,
   }
 }
 
-func (rec *GoStart) Kind() int {
-  return rec.KindEnum
-}
-
 func (rec *GoStart) Apply(px *Paxos) {
+  px.Start(seq, v)
 }
 
-//Record: AdvanceView --------------------------
+///////////////////////////////////////
 
 type AdvanceView struct {
-  KindEnum int
-  
+  Kind string  
   View int
 }
 
 func MakeAdvanceView(view int) *AdvanceView {
   return &AdvanceView {
-    KindEnum: KIND_ADVANCE_VIEW,
+    Kind: KIND_ADVANCE_VIEW,
     View: view,
   }
-}
-
-func (rec *AdvanceView) Kind() int {
-  return rec.KindEnum
 }
 
 func (rec *AdvanceView) Apply(px *Paxos) {
   px.view = rec.View
 }
 
-//Record: UpdateInstance --------------------------
+///////////////////////////////////////
 
 type UpdateInstance struct {
-  KindEnum int
+  Kind string
+  
+  Seq int
+  
+  Accepted bool
+  View_a int
+  V_a interface{}
+  
+  Decided bool
+  DecidedVal interface{} 
 }
 
-func MakeUpdateInstance() *UpdateInstance {
+func MakeInstanceAccepted(seq int, view_a int, v_a interface{}) *UpdateInstance {
+  rec := makeUpdateInstance(seq)
+  rec.Accepted = true
+  rec.View_a = view_a
+  rec.V_a = v_a
+  return rec
+}
+
+func MakeInstanceDecided(seq int, decidedVal interface{}) *UpdateInstance {
+  rec := makeUpdateInstance(seq)
+  rec.decided = true
+  rec.decidedVal = decidedVal
+  return rec
+}
+
+func makeUpdateInstance(seq int) *UpdateInstance {
   return &UpdateInstance {
-    KindEnum: KIND_UPDATE_INSTANCE,
+    Kind: KIND_UPDATE_INSTANCE,
+    Seq: seq,
   }
 }
 
-func (rec *UpdateInstance) Kind() int {
-  return rec.KindEnum
-}
-
 func (rec *UpdateInstance) Apply(px *Paxos) {  
+  inst := px.GetInstance(seq)
+  if rec.Accepted {
+    inst.Accepted = rec.Accepted
+    inst.View_a = rec.View_a
+    inst.V_a = rec.V_a
+  }
+  if rec.Decided {
+    inst.Decided = rec.Decided
+    inst.DecidedVal = rec.DecidedVal
+  }
 }
 
-//RedoLog class
+///////////////////////////////////////
 
 type RedoLog struct {
   px *Paxos
   filename string
-  fd *os.File
+  f *os.File
   Enabled bool
 }
 
@@ -100,42 +134,83 @@ func Startup(px *Paxos, filename string) *RedoLog {
     Enabled: false,
   }
 
-  /*
-  if file exists
-    open it
-    enabled = false
-    apply it
-    enabled = true
-  if file doesn't exist
-    create it
-    enabled = true
-  */
-    
-  //_, _ := os.OpenFile(rlog.filename, os.O_RDWR, 0666)
+  existed := exists(rlog.filename)
+
+  f, err := os.OpenFile(rlog.filename, os.O_CREATE | os.O_RDWR, 0666)
+  if err != nil {
+    log.Fatalf("cannot open file: %v", err)
+  }
+  rlog.f = f
+
+  if existed {
+    rlog.Enabled = false
+    rlog.applyLog()
+  }
+  rlog.Enabled = true
   
   return rlog
 }
 
 func (rlog *RedoLog) applyLog() {
-  /*
-  for each line
-    bytesread = 0
-    read json and convert to object
-    if fail
-      truncate to bytesread
-      break
-    update bytesread
-    apply record
-  */
+  rlog.f.Seek(0, 0)
   
+  bytesRead := 0
+  scanner := bufio.NewScanner(rlog.f)
+  
+  for scanner.Scan() {
+    line := string(scanner.Bytes())
+    fmt.Println("LINE:",line)
+    
+    var unknown GenericRecord
+    err := json.Unmarshal(scanner.Bytes(), &unknown)
+		if err != nil {
+      //truncate to bytesread
+			break
+		}
+
+    var rec Record
+
+    switch unknown.Kind {
+      case KIND_GO_START:
+        var specific GoStart
+        err = json.Unmarshal(scanner.Bytes(), &specific)
+        rec = &specific
+      case KIND_ADVANCE_VIEW:
+        var specific AdvanceView
+        err = json.Unmarshal(scanner.Bytes(), &specific)
+        rec = &specific
+      case KIND_UPDATE_INSTANCE:
+        var specific UpdateInstance
+        err = json.Unmarshal(scanner.Bytes(), &specific)
+        rec = &specific
+      default:
+        log.Fatal("unrecognized record type")
+        return
+    }
+    
+    //update bytesread
+    _ = bytesRead
+    
+    fmt.Println("DESERIALIZED:", rec)
+    if rlog.px != nil {
+      rec.Apply(rlog.px)
+    }
+  }
+  
+  //truncate to bytesread
+  //add a checkpoint
 }
 
-func (rlog *RedoLog) Log(record *Record) {
-  /*
-  convert to json
-  append to file
-  append "\n"
-  flush/sync
-  */
+func (rlog *RedoLog) Log(record Record) {  
+  b, err := json.Marshal(record)
+  if err != nil {
+		log.Fatal(err)
+    return
+	}
   
+  _, err = rlog.f.WriteString(string(b) + "\n")
+  rlog.f.Sync()
+  
+  //if too many records
+  //truncate and add a checkpoint
 }

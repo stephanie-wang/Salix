@@ -8,7 +8,7 @@ do
   echo "logfile: $logfile"
   echo $i
   echo "-----------------------------------------------------"
-  go test $@ 2>&1 | grep -v unexpected | grep -v broken | grep -v connection | grep -v method | tee $logfile
+  go test $@ 2>&1 | grep -v unexpected | grep -v broken | grep -v connection | grep -v method > $logfile
   if [ ${PIPESTATUS[0]} -ne 0 ] ; then
     echo "failed on $i"
     exit 1
