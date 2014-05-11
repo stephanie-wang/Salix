@@ -31,7 +31,7 @@ import "math/rand"
 import "math"
 import "time"
 
-var Debug int = 0
+var Debug int = 1
 
 func Dprintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -52,6 +52,14 @@ func valStr(v interface{}) interface{} {
 
 var FAILURE_DETECTOR_TO = 100  //ms
 
+type FakeMu struct {
+}
+
+func (m *FakeMu) Lock() {
+}
+func (m *FakeMu) Unlock() {
+}
+
 type Paxos struct {
   mu sync.Mutex
   l net.Listener
@@ -63,8 +71,6 @@ type Paxos struct {
   
   numPeers int
   majority int  //floor(numPeers/2) + 1
-
-  mu2 sync.RWMutex  //used to make sure no proposals during election?
   
   viewMu sync.Mutex
   dataMu sync.Mutex
@@ -162,6 +168,7 @@ type ProbeReply struct {
   Decided bool
   DecidedVal interface{}
   DoneVal int
+  View int
 }
 
 type DecidedArgs struct {
@@ -234,9 +241,9 @@ func (px *Paxos) preparer(view int) {
       break
     }
     
-    //px.mu.Lock()
+    px.mu.Lock()
     x := px.preparer_iteration(view)
-    //px.mu.Unlock()
+    px.mu.Unlock()
     if !x {
       break
     }
@@ -280,10 +287,13 @@ Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
         numPrepareOks = numPrepareOks + 1
         replies = append(replies, prepareReply)
       } //else {
-      //if prepareReply.View > px.view {     //TODO: might not be needed
-        //someone else became leader
-       // return false
-      //}
+//      px.viewMu.Lock()
+//      defer px.viewMu.Unlock()
+//      if prepareReply.View > px.view {     //TODO: might not be needed
+//        //someone else became leader
+//        px.view = prepareReply.View
+//        return false
+//      }
     }
     
     //abort early if enough oks or too many rejects/failures
@@ -416,10 +426,11 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
     } else {
       px.fdHearFrom(i)
     }
-    
-    if px.view > view { //if proposal view is obsolete
-      return
-    }
+  
+//THIS LINES CANT BE HERE
+//    if px.view > view { //if proposal view is obsolete
+//      return
+//    }
 
     if acceptReply.View > view {  //if other nodes have moved on
       px.viewMu.Lock()
@@ -469,6 +480,13 @@ func (px *Paxos) probe(view int, seq int) {
     probeReply := ProbeReply{}
     
     if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {
+      if probeReply.View > view {  //if other nodes have moved on
+        px.viewMu.Lock()
+        px.view = probeReply.View  //also move on
+        px.viewMu.Unlock()
+        return
+      }
+    
       px.MergeDoneVals(probeReply.DoneVal, i)
       
       if probeReply.Decided {
@@ -488,7 +506,11 @@ func (px *Paxos) probe(view int, seq int) {
         
         return
       }
-    }      
+    }   
+
+    if px.view > view { //if proposal view is obsolete
+      return
+    }
   }
 }
 
@@ -518,6 +540,8 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
       inst.mu.Unlock()
     }
     px.dataMu.Unlock()
+    
+    Dprintf("***[%v][view=%v] %v onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, reply.Accepted, args.View, args.LowestUndecided, args.Me)
     
     reply.Ok = true
   } else {
@@ -550,7 +574,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   //doing it with px.mu will deadlock
   //solution: create a viewMu just for reading/updating mu?
   
-  Dprintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
+  //Dprintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
   
   px.viewMu.Lock()
   if args.View >= px.view {
@@ -617,6 +641,10 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
     Dprintf("***[%v][view=%v] found! onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
   }
   inst.mu.Unlock()
+  
+  px.viewMu.Lock()
+  reply.View = px.view
+  px.viewMu.Unlock()
   
   return nil
 }
