@@ -95,10 +95,12 @@ type ReconfigArgs struct {
 
 type ReshardArgs struct {
   Num int // config number
-  ShardNum int
-  Shard []string        // list of files in the shard
+  //ShardNum int
+  //Shard []string        // list of files in the shard
+  Shards map[int][]string
   ShardHolders []string // list of servers holding this shard
-  Seen map[int64]*Reply
+  Seen map[int]map[int64]*Reply
+  //Seen map[int64]*Reply
 }
 
 type ReshardReply struct {
