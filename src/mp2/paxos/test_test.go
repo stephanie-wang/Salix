@@ -172,10 +172,6 @@ func TestBasic(t *testing.T) {
   fmt.Printf("  ... Passed 4\n")
 }
 
-// This test is no longer needed.
-// Depending on failure detector's timeouts,
-// deaf node may initiate comms before socket is dead...?
-
 func TestForget(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -573,12 +569,6 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
       }
     }
   }
-}
-
-func TestDeadlock(t *testing.T) {
-  runtime.GOMAXPROCS(4)
-  Debug = 0
-  TestPartition(t)
 }
 
 func TestPartition(t *testing.T) {

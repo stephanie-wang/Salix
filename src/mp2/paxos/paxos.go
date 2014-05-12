@@ -54,7 +54,7 @@ func valStr(v interface{}) interface{} {
 
 //too small a timeout causes consensus not to be reached in time
 //for testpartition
-var FAILURE_DETECTOR_TO = 500  //ms
+var FAILURE_DETECTOR_TO = 1000  //ms
 
 type FakeMu struct {
 }
@@ -65,7 +65,7 @@ func (m *FakeMu) Unlock() {
 }
 
 type Paxos struct {
-  mu sync.Mutex
+  mu sync.RWMutex
   l net.Listener
   dead bool
   unreliable bool
@@ -185,6 +185,14 @@ type DecidedArgs struct {
 
 type DecidedReply struct {
   DoneVal int
+}
+
+type ForwardArgs struct {  
+  Seq int
+  V interface{}
+}
+
+type ForwardReply struct {
 }
 
 // returns px.instances[seq], creating it if necessary
@@ -384,6 +392,8 @@ func (px *Paxos) driver(seq int, v interface{}) {
   
   inst := px.GetInstance(seq)
   
+  forwarded := make([]bool, px.numPeers)
+  
   for !inst.Decided && !px.dead {   
     //this breaks code
     //px.mu2.RLock()
@@ -394,6 +404,15 @@ func (px *Paxos) driver(seq int, v interface{}) {
     if leader == px.me {
       px.propose(view, seq, v)
     } else {
+      if !forwarded[leader] {
+        forwardArgs := ForwardArgs{}
+        forwardArgs.Seq = seq
+        forwardArgs.V = v
+        forwardReply := ForwardReply{}
+        if px.Call2(px.peers[leader], "Paxos.Forward", forwardArgs, &forwardReply) {
+          forwarded[leader] = true
+        }
+      }
       px.probe(view, seq)
     }
   }
@@ -405,7 +424,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
   
   v_prime := v;
   
-  px.mu.Lock()
+  px.mu.RLock()
   inst.mu.Lock()
   if inst.Accepted {
     v_prime = inst.V_a
@@ -413,7 +432,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
     v_prime = inst.DecidedVal
   }
   inst.mu.Unlock()
-  px.mu.Unlock()
+  px.mu.RUnlock()
   
   Dprintf("***[%v][view=%v] proposer(view=%v, seq=%v, v_prime=%v)\n", px.me, px.view, view, seq, valStr(v_prime))
   
@@ -658,6 +677,11 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   
   Dprintf("***[%v][view=%v] END onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
   
+  return nil
+}
+
+func (px *Paxos) Forward(args *ForwardArgs, reply *ForwardReply) error {
+  px.Start(args.Seq, args.V)
   return nil
 }
 
