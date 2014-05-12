@@ -10,8 +10,11 @@ import "strings"
 import "shardmaster"
 
 func appendToLog(logFile string, line []string) {
-  f, _ := os.OpenFile(logFile, os.O_CREATE | os.O_APPEND, 0666)
-  f.WriteString(strings.Join(line, " ") + "\n")
+  f, _ := os.OpenFile(logFile, os.O_WRONLY | os.O_CREATE | os.O_APPEND, 0666)
+  _, err := f.Write([]byte(strings.Join(line, " ") + "\n"))
+  if err != nil {
+    println(err.Error())
+  }
   f.Close()
 }
 
@@ -49,9 +52,11 @@ func recoverLiterals(logFile string) map[string]int {
 }
 
 func logStore(logFile string, shard int, files []string) {
-  line := append([]string{"store",
-    strconv.Itoa(shard)},
-    files...)
+  jsonFiles, _ := json.Marshal(files)
+  line := []string{"store",
+    strconv.Itoa(shard),
+    string(jsonFiles),
+  }
   appendToLog(logFile, line)
 }
 
