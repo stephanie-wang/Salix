@@ -18,7 +18,7 @@ import "encoding/gob"
 import "math/rand"
 import "shardmaster"
 
-const Debug=0
+const Debug=1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
         if Debug > 0 {
@@ -43,6 +43,7 @@ type ShardKV struct {
   fileMu sync.Mutex
   popularityMu sync.Mutex
   tickMu sync.Mutex
+  cleanMu sync.Mutex
   l net.Listener
   fileL net.Listener
   me int
@@ -914,35 +915,36 @@ func (kv *ShardKV) cleanTmp() {
   /*
   Try to clean up tmp files for the most recent reconfig
   */
+  // lock to prevent next cleanTmp ping from editing kv.cleanedConfig
+  kv.cleanMu.Lock()
+  defer kv.cleanMu.Unlock()
   min := kv.px.Min()
-
-  if kv.cleanedConfig > kv.config.Num {
-    // we haven't reached the next config yet
+  // check if next configuration exists
+  query := kv.sm.Query(kv.cleanedConfig + 1)
+  if query.Num != kv.cleanedConfig + 1 {
     return
   }
 
-  for kv.cleanedConfig <= kv.config.Num {
-    if seq, ok := kv.reconfigs[kv.cleanedConfig]; ok && seq >= min {
-      // we have reached next config, but not all instances have applied it yet
-      return
-    }
-    // either:
-    //  - next config had no sequence in the log --> this instance is starting
-    //  at this config 
-    //  - next config is in log and all instances have applied 
-    // then it's okay to delete the tmp files for the previous config
-    tmpDir := kv.getTmpPathname(kv.cleanedConfig - 1)
-    log.Println(tmpDir)
-    err := os.RemoveAll(tmpDir)
-    if err != nil {
-      log.Println(err)
-    }
-    DPrintf("cleaned %s", tmpDir)
-    kv.logMu.Lock()
-    logLiterals(kv.getFilepath(Literals), "cleanedConfig", kv.cleanedConfig + 1)
-    kv.logMu.Unlock()
-    kv.cleanedConfig++
+  // check if:
+  // - we've applied the next reconfiguration
+  // - if every other replica has applied the next reconfiguration
+  seq, ok := kv.reconfigs[kv.cleanedConfig]
+  if !ok || seq >= min {
+    return
   }
+
+  // if checks pass, then okay to delete the current configuration's tmp files
+  tmpDir := kv.getTmpPathname(kv.cleanedConfig)
+  log.Println(tmpDir)
+  err := os.RemoveAll(tmpDir)
+  if err != nil {
+    log.Println(err)
+  }
+  DPrintf("cleaned %s", tmpDir)
+  kv.logMu.Lock()
+  logLiterals(kv.getFilepath(Literals), "cleanedConfig", kv.cleanedConfig + 1)
+  kv.logMu.Unlock()
+  kv.cleanedConfig++
 }
 
 func (kv *ShardKV) checkpoint() {

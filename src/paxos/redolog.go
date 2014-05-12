@@ -1,5 +1,27 @@
 package paxos
 
+//
+// This is a log that we use to implement Write-Ahead Logging of
+// the MultiPaxos. To use it, in Make() of paxos.go, add
+//    rlog := Startup(px, "t.txt")
+//
+// Whenever you perform an operation that needs to be persisted, log it.
+// The log is always sycned/flushed. For example, before advancing
+// the view to 5:
+//    rlog.Log(MakeAdvanceView(5))
+//
+// Things that need to be logged include running px.Start(),
+// advancing the view, and updating any variables in a slot.
+// The code below can write records to the log.
+// It can also open the log and apply them.
+// The apply handlers for each type of operation are incomplete.
+// 
+// When recovering from a crash, Startup(px, "t.txt") will
+// restore the state of the Paxos object.
+//
+// Other operations and checkpointing can be added to the code below.
+//
+
 import "os"
 import "log"
 import "encoding/json"
@@ -128,6 +150,8 @@ func exists(name string) bool {
 }
 
 func Startup(px *Paxos, filename string) *RedoLog {
+  return nil
+
   rlog := &RedoLog {
     px: px,
     filename: filename,
