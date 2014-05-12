@@ -52,7 +52,7 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-var FAILURE_DETECTOR_TO = 300
+var FAILURE_DETECTOR_TO = 1000  //ms
 
 type FakeMu struct {
 }
