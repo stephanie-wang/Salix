@@ -31,6 +31,8 @@ import "math/rand"
 import "math"
 import "time"
 
+//make sure not to run TestRPC with printing enabled.
+//it causes the RPC count to be too high. idk why
 var Debug int = 0
 
 func Dprintf(format string, a ...interface{}) (n int, err error) {
@@ -482,14 +484,14 @@ func (px *Paxos) probe(view int, seq int) {
     probeArgs.Me = px.me
     probeArgs.DoneVal = px.doneVals[px.me]
     probeReply := ProbeReply{}
-    
+        
     if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {
-      if probeReply.View > view {  //if other nodes have moved on
+      /* if probeReply.View > view {  //if other nodes have moved on
         px.viewMu.Lock()
         px.view = probeReply.View  //also move on
         px.viewMu.Unlock()
         return
-      }
+      } */
     
       px.MergeDoneVals(probeReply.DoneVal, i)
       
@@ -554,6 +556,8 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
   reply.View = px.view
   
   px.viewMu.Unlock()
+  
+  Dprintf("***[%v][view=%v] END onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
   
   return nil
 }
@@ -649,6 +653,8 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   px.viewMu.Lock()
   reply.View = px.view
   px.viewMu.Unlock()
+  
+  Dprintf("***[%v][view=%v] END onProbe(args.Seq=%v) from %v\n", px.me, px.view, args.Seq, args.Me)
   
   return nil
 }
@@ -848,6 +854,7 @@ func (px *Paxos) fdOnFail(view int) {
     return             //avoid starting new thread
   }
   
+  px.viewMu.Unlock()
   
   px.fdInstalledView = view
   go px.preparer(view)
