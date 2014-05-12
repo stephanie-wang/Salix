@@ -366,7 +366,6 @@ func (sm *ShardMaster) wait(seq int, isNOP bool) interface{} {
 // simulate this machine failing
 func (sm *ShardMaster) Fail(){
   sm.fail = true
-  sm.restartMemory()
 }
 
 // simulate a revival of this machine after it has failed
@@ -374,7 +373,8 @@ func (sm *ShardMaster) Fail(){
 func (sm *ShardMaster) Revive(){
   sm.mu.Lock()
   defer sm.mu.Unlock()
-  
+
+  sm.restartMemory()
   sm.fail = false
 }
 
