@@ -74,8 +74,10 @@ func setup(tag string, unreliable bool, loadBalance bool) ([]string, []int64, []
 }
 
 // Benchmark for automatic load balancing
+// Test these on regular Paxos to make sure our tests are only
+// changing one variable at a time.
 func TestReadWrite(t *testing.T) {
-  smh, gids, ha, _, clean := setup("basic", false, false)
+  smh, gids, ha, _, clean := setup("basic", false, true)
   defer clean()
 
   fmt.Printf("Test: Basic write/read...\n")
