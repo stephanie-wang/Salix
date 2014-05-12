@@ -687,7 +687,7 @@ func TestBenchmark(t *testing.T) {
 
   for i:=0; i<50; i++ {
     start := time.Now()
-    TestPartition(t)
+    TestManyUnreliable(t)
     end := time.Now()
     total += end.Sub(start).Seconds()
   }
