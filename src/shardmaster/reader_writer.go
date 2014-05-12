@@ -1,8 +1,22 @@
 package shardmaster
 
+//
+// This package includes functions that read to and write from disk.
+// They are used for the server's write-ahead-log, so that upon recovery after a
+// failure, the server may recover its memory contents by reading from disk.
+// For a given server with id x, it creates 2 files
+// 		sm-config-x: stores all the configurations x has applied since the beginning
+//					 stores them in JSON format, where configurations are
+//					 separated by a newline
+//					 the writer appends to this file every new configuration
+//		sm-score-x:  stores both the scores that were heard and the groups that
+//					 have announced the scores for the most recent configuration.
+// 					 this is stored in a single JSON object
+//					 this file is re-written every time this changes
+//
+
 import "bufio"
 import "encoding/json"
-// import "fmt"
 import "log"
 import "os"
 import "strconv"

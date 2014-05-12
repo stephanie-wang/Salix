@@ -37,7 +37,7 @@ func MakeGoStart(seq int, v interface{}) *GoStart {
 }
 
 func (rec *GoStart) Apply(px *Paxos) {
-  px.Start(seq, v)
+  px.Start(rec.Seq, rec.V)
 }
 
 ///////////////////////////////////////
@@ -83,8 +83,8 @@ func MakeInstanceAccepted(seq int, view_a int, v_a interface{}) *UpdateInstance 
 
 func MakeInstanceDecided(seq int, decidedVal interface{}) *UpdateInstance {
   rec := makeUpdateInstance(seq)
-  rec.decided = true
-  rec.decidedVal = decidedVal
+  rec.Decided = true
+  rec.DecidedVal = decidedVal
   return rec
 }
 
@@ -96,7 +96,7 @@ func makeUpdateInstance(seq int) *UpdateInstance {
 }
 
 func (rec *UpdateInstance) Apply(px *Paxos) {  
-  inst := px.GetInstance(seq)
+  inst := px.GetInstance(rec.Seq)
   if rec.Accepted {
     inst.Accepted = rec.Accepted
     inst.View_a = rec.View_a

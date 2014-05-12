@@ -2,7 +2,13 @@ package shardmaster
 
 // 
 // Shardmaster clerk.
-// Please don't change this file.
+// Because our failure model assumes that it is possible for a server
+// to silently fail, lose its memory, and recover, it is necessary
+// to attatch a random ID to every request the clerk sends.
+// It is also necessary to add a new type of request (PopularityPing)
+// for the automatic load balancing.
+//
+// These are the only changes made to this file.
 //
 
 import "net/rpc"

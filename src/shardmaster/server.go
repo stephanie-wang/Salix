@@ -1,5 +1,13 @@
 package shardmaster
 
+//
+// This files describes a shardmaster server.
+// It builds on the shardmaster implementation for lab 3a. Load balancing is no longer
+// done by giving equal weight to each shard. Instead, it uses the alorigthm in
+// load_balance.go.
+// A write-ahead-log is also used. Logic for this can be found in reader_writer.go.
+//
+
 import "net"
 import "fmt"
 import "net/rpc"
@@ -21,7 +29,7 @@ type ShardMaster struct {
   dead bool // for testing
   unreliable bool // for testing
   px *paxos.Paxos
-  failed bool // for testing
+  failed bool // for testing, simulates a server has lost its memory contents
 
   configs []Config // indexed by config num
 
@@ -209,8 +217,6 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-  fmt.Println("JOIN ", args.GID )
-
   op := Op{Type:"JOIN", GID:args.GID, Servers:args.Servers, ID: args.ID}
   seq := sm.propose(op, func(a Op, b Op) bool {
     if a.Type == b.Type && a.GID == b.GID && a.ID == b.ID{
@@ -360,6 +366,7 @@ func (sm *ShardMaster) wait(seq int, isNOP bool) interface{} {
 // simulate this machine failing
 func (sm *ShardMaster) Fail(){
   sm.fail = true
+  sm.restartMemory()
 }
 
 // simulate a revival of this machine after it has failed
@@ -367,8 +374,7 @@ func (sm *ShardMaster) Fail(){
 func (sm *ShardMaster) Revive(){
   sm.mu.Lock()
   defer sm.mu.Unlock()
-
-  sm.restartMemory()
+  
   sm.fail = false
 }
 
