@@ -675,6 +675,22 @@ func TestPartition(t *testing.T) {
   fmt.Printf("  ... Passed 16\n")
 }
 
+func TestBenchmark(t *testing.T) {
+  var total float64 = 0
+  var divide float64 = 50
+
+  for i:=0; i<50; i++ {
+    start := time.Now()
+    TestPartition(t)
+    end := time.Now()
+    total += end.Sub(start).Seconds()
+  }
+  
+  avg := total/divide
+
+  fmt.Printf("Average is "+ strconv.FormatFloat(avg, 'f', 4, 64) + "\n")
+}
+
 func TestLots(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
