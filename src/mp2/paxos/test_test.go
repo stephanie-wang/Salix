@@ -575,6 +575,12 @@ func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
   }
 }
 
+func TestDeadlock(t *testing.T) {
+  runtime.GOMAXPROCS(4)
+  Debug = 0
+  TestPartition(t)
+}
+
 func TestPartition(t *testing.T) {
   runtime.GOMAXPROCS(4)
 

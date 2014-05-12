@@ -52,7 +52,9 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-var FAILURE_DETECTOR_TO = 1000  //ms
+//too small a timeout causes consensus not to be reached in time
+//for testpartition
+var FAILURE_DETECTOR_TO = 500  //ms
 
 type FakeMu struct {
 }
