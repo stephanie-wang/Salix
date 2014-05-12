@@ -31,8 +31,7 @@ import "math/rand"
 import "math"
 import "time"
 
-//make sure not to run TestRPC with printing enabled.
-//it causes the RPC count to be too high. idk why
+//don't run TestRPC with printing. it causes RPC count to be too high
 var Debug int = 0
 
 func Dprintf(format string, a ...interface{}) (n int, err error) {
@@ -52,20 +51,12 @@ func valStr(v interface{}) interface{} {
   }
 }
 
-//too small a timeout causes consensus not to be reached in time
-//for testpartition
+//leader timeout
+//too small a timeout may cause consensus not to be reached in time
 var FAILURE_DETECTOR_TO = 1000  //ms
 
-type FakeMu struct {
-}
-
-func (m *FakeMu) Lock() {
-}
-func (m *FakeMu) Unlock() {
-}
-
 type Paxos struct {
-  mu sync.RWMutex
+  mu sync.RWMutex //mutex to prevent simultaneous prepare/propose
   l net.Listener
   dead bool
   unreliable bool
@@ -76,9 +67,9 @@ type Paxos struct {
   numPeers int
   majority int  //floor(numPeers/2) + 1
   
-  viewMu sync.Mutex
-  dataMu sync.Mutex
-  view int
+  viewMu sync.Mutex //mutex for view
+  dataMu sync.Mutex //mutex for instances, doneVals
+  view int  //current view
   instances map[int]*PaxosInstance  //Paxos instances
   max int // number returned by Max()  
   doneVals []int  //done vals for each peer
@@ -87,10 +78,14 @@ type Paxos struct {
   started map[int]bool
   startMu sync.Mutex
 
-  //failure detection
+  //failure detector that watches leader
   fdMu sync.Mutex
   fdLastPing time.Time
   fdInstalledView int
+  
+  //persistence / recovery using write-ahead logging
+  //unfinished. see redolog.go
+  redolog *RedoLog
 }
 
 func InitPx(px *Paxos) {
@@ -144,9 +139,10 @@ type PrepareArgs struct {
 }
 
 type PrepareReply struct {
-  Ok bool //true=ok, false=reject
-  Accepted map[int]PaxosInstance  //includes decided so
-            //later leaders can re-propose with same accepted value
+  Ok bool
+  //includes all instances >= Prepare's LowestUndecided
+  //that have accepted a value. later leaders may re-propose with these values
+  Accepted map[int]PaxosInstance  
   View int
 }
 
@@ -158,7 +154,7 @@ type AcceptArgs struct {
 }
 
 type AcceptReply struct {
-  Ok bool //true=ok, false=reject
+  Ok bool
   View int
 }
 
@@ -167,6 +163,9 @@ type ProbeArgs struct {
   Me int
   DoneVal int
 }
+
+// probe = ask other nodes whether decision has been made
+// since non-leader can't send Accepts to learn that
 
 type ProbeReply struct {
   Decided bool
@@ -186,6 +185,8 @@ type DecidedArgs struct {
 type DecidedReply struct {
   DoneVal int
 }
+
+// Forward = forward the Start() request to the leader
 
 type ForwardArgs struct {  
   Seq int
@@ -221,10 +222,12 @@ func (px *Paxos) MergeDoneVals(doneVal int, from int) {
   }
 }
 
+// leader of ith view = i % N
 func (px *Paxos) leader(view int) int {
   return view % px.numPeers
 }
 
+// returns the slot number of the lowest undecided slot
 func (px *Paxos) lowestUndecided() int {
   px.dataMu.Lock()
   defer px.dataMu.Unlock()
@@ -244,11 +247,11 @@ func (px *Paxos) lowestUndecided() int {
   return math.MaxInt32  //should never get here
 }
 
+// install the specified view (used by leader election)
 func (px *Paxos) preparer(view int) {
   Dprintf("***[%v][view=%v] preparer(view=%v)\n", px.me, px.view, view)
 
-  for !px.dead {
-    
+  for !px.dead {    
     if px.view >= view {
       break
     }
@@ -256,22 +259,16 @@ func (px *Paxos) preparer(view int) {
     px.mu.Lock()
     x := px.preparer_iteration(view)
     px.mu.Unlock()
+    
     if !x {
       break
     }
   }
 }
 
-//returns true for continue
+// returns true if the loop in preparer should continue
 func (px *Paxos) preparer_iteration(view int) bool {
-Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
-
-  //this breaks code
-  //px.mu2.Lock()
-  //defer px.mu2.Unlock()
-
-  //px.mu.Lock()
-  //defer px.mu.Unlock()
+  Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
 
   if px.view >= view {
     return false
@@ -301,7 +298,7 @@ Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
       } //else {
 //      px.viewMu.Lock()
 //      defer px.viewMu.Unlock()
-//      if prepareReply.View > px.view {     //TODO: might not be needed
+//      if prepareReply.View > px.view {
 //        //someone else became leader
 //        px.view = prepareReply.View
 //        return false
@@ -329,51 +326,42 @@ Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
           
           Dprintf("***[%v][view=%v] looping slot=%v mine=%v recvd=%v preparer(view=%v, %v)\n", px.me, px.view, slot, inst, recvd, view, lowestUndecided)
           
-          //if !inst.Decided { <- this line causes decided vals to be different. it is the devil
-            if !inst.Accepted || (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
+          if !inst.Accepted || (recvd.Accepted && recvd.View_a >= inst.View_a) {  //put equal here to get my own
 
-              //don't overwrite my decided value!
-              inst.Accepted = recvd.Accepted
-              inst.View_a = recvd.View_a
-              inst.V_a = recvd.V_a
-              
-              Dprintf("***[%v][view=%v] TRUE slot=%v preparer(view=%v, %v)\n", px.me, px.view, slot, view, lowestUndecided)
-              
-              changed = append(changed, slot)
-            }
-          //}
+            //don't overwrite my decided value!
+            inst.Accepted = recvd.Accepted
+            inst.View_a = recvd.View_a
+            inst.V_a = recvd.V_a
+            
+            Dprintf("***[%v][view=%v] TRUE slot=%v preparer(view=%v, %v)\n", px.me, px.view, slot, view, lowestUndecided)
+            
+            changed = append(changed, slot)
+          }
           
           inst.mu.Unlock()
         }
       }
     }
-    
-    
 
-    for _, slot := range changed {
+    for _, slot := range changed {  //for debugging
       inst := px.GetInstance(slot)
       inst.mu.Lock()
-      //inst.View_a = view  //new view
-      
       Dprintf("***[%v][view=%v] highest accept seq=%v, val=%v, view_a=%v preparer(view=%v)\n", px.me, px.view+1, slot, inst.V_a, inst.View_a, view)
-      
       inst.mu.Unlock()
     }
-
     
     //start each accepted instance that I didn't know about
     px.dataMu.Lock()
     for slot, inst := range px.instances {
       inst.mu.Lock()        
       if (inst.Accepted && !inst.Decided) {
-        go px.Start(slot, inst.V_a) //TODO: might be a bug
-        //do that in thread so I don't have to give up px.mu
+        go px.Start(slot, inst.V_a)
       }
       inst.mu.Unlock()
     }
     px.dataMu.Unlock()
     
-    px.viewMu.Lock()  //if other code locks with this, they will see most recent number
+    px.viewMu.Lock()  //if other code locks with this, they will see most recent view
     px.view = view
     px.viewMu.Unlock()
     
@@ -387,6 +375,7 @@ Dprintf("***[%v][view=%v] preparer_iteration(view=%v)\n", px.me, px.view, view)
   return true
 }
 
+// thread launched by px.start()
 func (px *Paxos) driver(seq int, v interface{}) {
   Dprintf("***[%v][view=%v] driver(seq=%v, v=%v)\n", px.me, px.view, seq, valStr(v))
   
@@ -443,7 +432,7 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
   for i:=0; i<px.numPeers && !px.dead; i++ {
     acceptArgs := AcceptArgs{}
     acceptArgs.Seq = seq
-    acceptArgs.View = view //view //x //view
+    acceptArgs.View = view
     acceptArgs.V = v_prime
     acceptArgs.Me = px.me
     acceptReply := AcceptReply{}
@@ -454,10 +443,9 @@ func (px *Paxos) propose(view int, seq int, v interface{}) {
       px.fdHearFrom(i)
     }
   
-//THIS LINES CANT BE HERE
-//    if px.view > view { //if proposal view is obsolete
-//      return
-//    }
+    //if px.view > view {
+    //  return
+    //}
 
     if acceptReply.View > view {  //if other nodes have moved on
       px.viewMu.Lock()
@@ -507,7 +495,7 @@ func (px *Paxos) probe(view int, seq int) {
     probeReply := ProbeReply{}
         
     if px.Call2(px.peers[i], "Paxos.Probe", probeArgs, &probeReply) {
-      /* if probeReply.View > view {  //if other nodes have moved on
+   /* if probeReply.View > view {  //if other nodes have moved on
         px.viewMu.Lock()
         px.view = probeReply.View  //also move on
         px.viewMu.Unlock()
@@ -542,7 +530,6 @@ func (px *Paxos) probe(view int, seq int) {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-
   Dprintf("***[%v][view=%v] onPrepare(args.View=%v, args.Lowest=%v) from %v\n", px.me, px.view, args.View, args.LowestUndecided, args.Me)
   
   px.fdHearFrom(args.Me)
@@ -589,22 +576,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   }
   
   px.fdHearFrom(args.Me)
-  
-  //5 peers
-  //0 goes to 65, hears nothing about seq=55
-  //THEN 2,3,4 accept something for seq=55 at view 63
-  //if that was true, 0 shoulda heard about it
-  //the px.view must be stale in 2,3,4
-  //solution: add lock here
-  //also, px.view might be stale in Prepare() RPC
-  //which might cause px.view to go down
-  //px.view used to be N_p which was inside inst
-  //that's why didn't have to lock before
-  //doing it with px.mu will deadlock
-  //solution: create a viewMu just for reading/updating mu?
-  
-  //Dprintf("***[%v][view=%v] onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
-  
+    
   px.viewMu.Lock()
   if args.View >= px.view {
     Dprintf("***[%v][view=%v] accepted onAccept(args.View=%v, args.Seq=%v, args.V=%v) from %v\n", px.me, px.view, args.View, args.Seq, valStr(args.V), args.Me)
@@ -651,6 +623,8 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
   return nil
 }
 
+//ask a peer whether there's a decided value in case you missed
+//the decided messages
 func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   px.MergeDoneVals(args.DoneVal, args.Me)
   reply.DoneVal = px.doneVals[px.me]
@@ -680,6 +654,7 @@ func (px *Paxos) Probe(args *ProbeArgs, reply *ProbeReply) error {
   return nil
 }
 
+//RPC used for forwarding a Start to the leader
 func (px *Paxos) Forward(args *ForwardArgs, reply *ForwardReply) error {
   px.Start(args.Seq, args.V)
   return nil
@@ -828,6 +803,7 @@ func (px *Paxos) Kill() {
 // failure detection code
 //
 
+// failure detector thread
 func (px *Paxos) fdThread() {
   fdPrevTarget := -1
   var prevLastPing time.Time
@@ -856,6 +832,7 @@ func (px *Paxos) fdThread() {
   }
 }
 
+// call this whenever you hear from a peer
 func (px *Paxos) fdHearFrom(host int) {
   px.fdMu.Lock()
   defer px.fdMu.Unlock()
@@ -867,6 +844,8 @@ func (px *Paxos) fdHearFrom(host int) {
   px.viewMu.Unlock()
 }
 
+// the function called when the current leader fails
+// starts a preparer
 func (px *Paxos) fdOnFail(view int) {
   px.viewMu.Lock()
   
